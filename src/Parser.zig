@@ -5,6 +5,7 @@ const Ast = @import("Ast.zig");
 const TokenIndex = Ast.TokenIndex;
 const Node = Ast.Node;
 const ExtraIndex = Ast.ExtraIndex;
+const ExtraRange = Ast.ExtraRange;
 const Lexer = @import("Lexer.zig");
 const Token = Lexer.Token;
 
@@ -13,7 +14,8 @@ const Parser = @This();
 gpa: Allocator,
 source: [:0]const u8,
 tokens: Ast.TokenList.Slice,
-extra_data: std.ArrayList(u8),
+scratch: std.ArrayList(Node.Index),
+extra_data: std.ArrayList(u32),
 tok_i: TokenIndex,
 nodes: Ast.NodeList,
 errors: std.ArrayList(ParseError),
@@ -26,6 +28,8 @@ const ParseError = struct {
         generic_token,
         unexpected_eof,
         expected_expr,
+        expected_decl,
+        expected_semicolon,
     };
 
     pub fn format(s: ParseError, writer: *std.Io.Writer, source: [:0]const u8, tokens: Ast.TokenList.Slice) std.Io.Writer.Error!void {
@@ -36,6 +40,8 @@ const ParseError = struct {
             .generic_token => try writer.print("Bad token '{s}'\n", .{token_string}),
             .unexpected_eof => try writer.writeAll("Unexpected EOF\n"),
             .expected_expr => try writer.print("Unexpected '{s}', expected an expression\n", .{token_string}),
+            .expected_decl => try writer.print("Unexpected '{s}', expected a declaration\n", .{token_string}),
+            .expected_semicolon => try writer.print("Unexpected '{s}', expected a semicolon\n", .{token_string}),
         }
     }
 };
@@ -58,8 +64,8 @@ pub fn parseRoot(p: *Parser) Error!void {
         .kind = .root,
     });
 
-    const node = try p.parseExpr();
-    p.nodes.items(.data)[0] = .{ .node = node };
+    const decls = try p.parseContainerMembers();
+    p.nodes.items(.data)[0] = .{ .extra_range = decls };
 
     // try p.parseContainerMembers();
 }
@@ -97,33 +103,100 @@ fn reserveNode(p: *Parser) Allocator.Error!usize {
     return p.nodes.len - 1;
 }
 
-fn addExtra(p: *Parser, value: anytype) Allocator.Error!ExtraIndex {
-    const result = p.extra_data.items.len;
-    try p.extra_data.appendSlice(p.gpa, std.mem.asBytes(&value));
-    return result;
+fn setNode(p: *Parser, idx: usize, node: Node) Node.Index {
+    p.nodes.set(idx, node);
+    return @fromBackingInt(@intCast(idx));
 }
 
-fn parseContainerMembers(p: *Parser) Error!void {
-    while (true) {
-        switch (p.tokenTag(p.tok_i)) {
-            .keyword_let,
-            .keyword_fun,
-            => try p.parseDecl(),
-            else => return p.failError(.generic_token),
-        }
+fn currentExtraIndex(p: *Parser) ExtraIndex {
+    return @fromBackingInt(@intCast(p.extra_data.items.len));
+}
+
+fn addExtraStruct(p: *Parser, value: anytype) Allocator.Error!void {
+    const type_info = @typeInfo(@TypeOf(value)).@"struct";
+
+    for (type_info.field_names) |field_name| {
+        p.addExtra(@field(value, field_name));
     }
+
+    try p.extra_data.appendSlice(p.gpa, std.mem.asBytes(&value));
 }
 
-fn parseDecl(p: *Parser) Error!void {
+fn addExtra(p: *Parser, value: anytype) Allocator.Error!void {
+    const extra: u32 = switch (@TypeOf(value)) {
+        ExtraIndex,
+        Node.Index,
+        => @backingInt(value),
+        TokenIndex,
+        => value,
+        else => @compileError("not acceptable type for extra"),
+    };
+
+    try p.extra_data.append(p.gpa, extra);
+}
+
+fn listToSpan(p: *Parser, nodes: []const Node.Index) Allocator.Error!ExtraRange {
+    try p.extra_data.appendSlice(p.gpa, @ptrCast(nodes));
+    return .{
+        .start = @fromBackingInt(@intCast(p.extra_data.items.len - nodes.len)),
+        .end = @fromBackingInt(@intCast(p.extra_data.items.len)),
+    };
+}
+
+fn parseContainerMembers(p: *Parser) Error!ExtraRange {
+    const scratch_top = p.scratch.items.len;
+    defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
+    while (true) {
+        const node = switch (p.tokenTag(p.tok_i)) {
+            .keyword_let,
+            .keyword_func,
+            => try p.parseDecl(),
+            .eof, .r_brace => break,
+            else => return p.failError(.expected_decl),
+        };
+
+        try p.scratch.append(p.gpa, node);
+    }
+
+    return p.listToSpan(p.scratch.items[scratch_top..]);
+}
+
+fn parseDecl(p: *Parser) Error!Node.Index {
+    const start_token = p.tok_i;
     const is_fn = try p.parseFnProto();
 
     if (is_fn) |fn_proto| {
-        _ = fn_proto;
+        const block = try p.parseBlock();
+        return p.addNode(.{
+            .main_token = start_token,
+            .data = .{ .node_and_node = .{ fn_proto, block } },
+            .kind = .func_decl,
+        });
     }
+
+    return p.parseVarDecl();
+}
+
+fn parseVarDecl(p: *Parser) Error!Node.Index {
+    const decl_token = p.eatToken(.keyword_let).?;
+    _ = try p.expectToken(.identifier);
+    if (p.tokenTag(p.tok_i) != .equal) {
+        // TODO: typed variable declerations
+    }
+
+    _ = try p.expectToken(.equal);
+    const initial_value = try p.expectExpr();
+
+    return p.addNode(.{
+        .kind = .var_decl,
+        .main_token = decl_token,
+        .data = .{ .node_and_opt = .{ initial_value, .none } },
+    });
 }
 
 fn parseFnProto(p: *Parser) Error!?Node.Index {
-    const fn_token = p.eatToken(.keyword_fun) orelse return null;
+    const fn_token = p.eatToken(.keyword_func) orelse return null;
 
     const func_node_idx = try p.reserveNode();
 
@@ -131,10 +204,12 @@ fn parseFnProto(p: *Parser) Error!?Node.Index {
     _ = p.eatToken(.l_paren);
     _ = p.eatToken(.r_paren);
 
-    // p.parseTypeExpr
+    const return_type = try p.parseTypeExpr() orelse return p.failError(.expected_expr);
 
     return p.setNode(func_node_idx, .{
-        .token = fn_token,
+        .main_token = fn_token,
+        .data = .{ .node = return_type },
+        .kind = .func_proto,
     });
 }
 
@@ -162,12 +237,16 @@ const oper_table = std.enums.directEnumArrayDefault(Token.Tag, OperInfo, .{ .pre
     .slash = .{ .prec = .arithmetic_prod },
 });
 
-fn parseExpr(p: *Parser) Error!Node.Index {
+fn expectExpr(p: *Parser) Error!Node.Index {
+    return try p.parseExpr() orelse return p.failError(.expected_expr);
+}
+
+fn parseExpr(p: *Parser) Error!?Node.Index {
     return p.parseExprPrecedence(.bottom);
 }
 
-fn parseExprPrecedence(p: *Parser, min_prec: OperInfo.Prec) Error!Node.Index {
-    var node = try p.parsePrimaryExpr();
+fn parseExprPrecedence(p: *Parser, min_prec: OperInfo.Prec) Error!?Node.Index {
+    var node = try p.parsePrimaryExpr() orelse return null;
 
     while (true) {
         const tok_tag = p.tokenTag(p.tok_i);
@@ -179,10 +258,10 @@ fn parseExprPrecedence(p: *Parser, min_prec: OperInfo.Prec) Error!Node.Index {
 
         const oper_token = p.nextToken();
 
-        const rhs = try p.parseExprPrecedence(info.prec);
+        const rhs = try p.parseExprPrecedence(info.prec) orelse return null;
 
         node = try p.addNode(.{
-            .kind = .bin_op,
+            .kind = .infix_op,
             .main_token = oper_token,
             .data = .{ .node_and_node = .{ node, rhs } },
         });
@@ -191,17 +270,72 @@ fn parseExprPrecedence(p: *Parser, min_prec: OperInfo.Prec) Error!Node.Index {
     return node;
 }
 
-fn parsePrimaryExpr(p: *Parser) Error!Node.Index {
-    const node_kind: Node.Kind = switch (p.tokenTag(p.tok_i)) {
-        .identifier => .identifier,
-        .int_literal => .int_literal,
-        .eof => return p.failError(.unexpected_eof),
-        else => return p.failError(.expected_expr),
-    };
+fn parsePrefixExpr(p: *Parser) Error!?Node.Index {
+    switch (p.tokenTag(p.tok_i)) {
+        .minus,
+        .bang,
+        => {},
+        else => return p.parsePrimaryExpr(),
+    }
 
     return p.addNode(.{
         .main_token = p.nextToken(),
+        .kind = .prefix_op,
+        .data = .{ .node = p.parsePrefixExpr() },
+    });
+}
+
+fn parsePrimaryExpr(p: *Parser) Error!?Node.Index {
+    return switch (p.tokenTag(p.tok_i)) {
+        .keyword_return => try p.addNode(.{
+            .main_token = p.nextToken(),
+            .kind = .@"return",
+            .data = .{ .opt = .fromOptional(try p.parseExpr()) },
+        }),
+        else => p.parseTypeExpr(),
+    };
+}
+
+fn parseTypeExpr(p: *Parser) Error!?Node.Index {
+    const node_kind: Node.Kind = switch (p.tokenTag(p.tok_i)) {
+        .identifier => .identifier,
+        .int_literal => .int_literal,
+        else => return null,
+    };
+
+    return try p.addNode(.{
+        .main_token = p.nextToken(),
         .kind = node_kind,
         .data = undefined,
+    });
+}
+
+fn parseBlock(p: *Parser) Error!Node.Index {
+    const start_token = p.eatToken(.l_brace).?;
+
+    const scratch_top = p.scratch.items.len;
+    defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
+    while (true) {
+        const node = switch (p.tokenTag(p.tok_i)) {
+            .r_brace => break,
+            .keyword_let,
+            .keyword_var,
+            => try p.parseVarDecl(),
+            .eof => return p.failError(.unexpected_eof),
+            else => try p.expectExpr(),
+        };
+
+        try p.scratch.append(p.gpa, node);
+
+        if (p.tokenTag(p.tok_i - 1) != .r_brace) {
+            _ = p.eatToken(.semicolon) orelse return p.failError(.expected_semicolon);
+        }
+    }
+
+    return p.addNode(.{
+        .kind = .block,
+        .main_token = start_token,
+        .data = .{ .extra_range = try p.listToSpan(p.scratch.items[scratch_top..]) },
     });
 }

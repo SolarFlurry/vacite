@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const Self = @This();
 
 source: [:0]const u8,
@@ -17,7 +18,14 @@ pub const Token = struct {
         string_literal,
         keyword_let,
         keyword_var,
-        keyword_fun,
+        keyword_func,
+        keyword_return,
+        keyword_continue,
+        keyword_break,
+        keyword_if,
+        keyword_then,
+        keyword_else,
+        keyword_while,
         l_brace,
         r_brace,
         l_paren,
@@ -50,7 +58,14 @@ pub const Token = struct {
     const keywords = std.StaticStringMap(Tag).initComptime(.{
         .{ "let", .keyword_let },
         .{ "var", .keyword_var },
-        .{ "fun", .keyword_fun },
+        .{ "func", .keyword_func },
+        .{ "return", .keyword_return },
+        .{ "continue", .keyword_continue },
+        .{ "break", .keyword_break },
+        .{ "if", .keyword_if },
+        .{ "then", .keyword_then },
+        .{ "else", .keyword_else },
+        .{ "while", .keyword_while },
     });
 };
 

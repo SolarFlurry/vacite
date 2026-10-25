@@ -70,18 +70,18 @@ fn run(
 
     try writer.print("{f}", .{ast});
 
-    const bytecode_array = try ast.bytecode(gpa);
-    defer gpa.free(bytecode_array.bytecode);
-
-    try writer.writeByte('\n');
-    try debug.debugBytecode(&bytecode_array, writer);
-    try writer.writeByte('\n');
-
-    var vm: Vm = try .init(gpa, bytecode_array, &.{});
-    defer vm.deinit();
-
-    try vm.run(writer);
-    try debug.debugStackFrame(&vm.stack_frames.items[0], writer);
+    // const bytecode_array = try ast.bytecode(gpa);
+    // defer gpa.free(bytecode_array.bytecode);
+    //
+    // try writer.writeByte('\n');
+    // try debug.debugBytecode(&bytecode_array, writer);
+    // try writer.writeByte('\n');
+    //
+    // var vm: Vm = try .init(gpa, bytecode_array, &.{});
+    // defer vm.deinit();
+    //
+    // try vm.run(writer);
+    // try debug.debugStackFrame(&vm.stack_frames.items[0], writer);
 }
 
 fn bytecode(gpa: std.mem.Allocator, writer: *std.Io.Writer) !void {
