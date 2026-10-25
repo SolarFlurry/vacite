@@ -62,7 +62,10 @@ fn run(
 
     _ = try file.readPositionalAll(io, file_contents, 0);
 
-    var ast = try Ast.parse(gpa, file_contents);
+    var ast = Ast.parse(gpa, file_contents, writer) catch |err| {
+        if (err != error.ParseError) return err;
+        return;
+    };
     defer ast.deinit(gpa);
 
     try writer.print("{f}", .{ast});

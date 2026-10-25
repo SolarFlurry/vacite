@@ -56,7 +56,7 @@ pub fn tokenTag(s: *const Ast, token: TokenIndex) Token.Tag {
     return s.tokens.get(token).tag;
 }
 
-pub fn parse(gpa: Allocator, source: [:0]const u8) Parser.Error!Ast {
+pub fn parse(gpa: Allocator, source: [:0]const u8, writer: *std.Io.Writer) (Parser.Error || error{WriteFailed})!Ast {
     var tokens: TokenList = .empty;
 
     var lexer: Lexer = .init(source);
@@ -76,8 +76,22 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Parser.Error!Ast {
         .extra_data = .empty,
         .errors = .empty,
     };
+    errdefer {
+        parser.tokens.deinit(gpa);
+        parser.nodes.deinit(gpa);
+        parser.extra_data.deinit(gpa);
+        parser.errors.deinit(gpa);
+    }
 
-    try parser.parseRoot();
+    const result = parser.parseRoot();
+    result catch |err| {
+        if (err != error.ParseError) return err;
+        for (parser.errors.items) |error_data| {
+            try error_data.format(writer, source, parser.tokens);
+        }
+
+        return err;
+    };
 
     return .{
         .source = source,

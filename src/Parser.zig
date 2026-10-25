@@ -22,9 +22,22 @@ const ParseError = struct {
     kind: Kind,
     token: TokenIndex,
 
-    const Kind = enum(u8) {
+    const Kind = enum {
         generic_token,
+        unexpected_eof,
+        expected_expr,
     };
+
+    pub fn format(s: ParseError, writer: *std.Io.Writer, source: [:0]const u8, tokens: Ast.TokenList.Slice) std.Io.Writer.Error!void {
+        try writer.writeAll("\x1b[31mError\x1b[0m: ");
+        const token = tokens.get(s.token);
+        const token_string = source[token.loc.start..token.loc.end];
+        switch (s.kind) {
+            .generic_token => try writer.print("Bad token '{s}'\n", .{token_string}),
+            .unexpected_eof => try writer.writeAll("Unexpected EOF\n"),
+            .expected_expr => try writer.print("Unexpected '{s}', expected an expression\n", .{token_string}),
+        }
+    }
 };
 
 pub const Error = error{ParseError} || Allocator.Error;
@@ -182,7 +195,8 @@ fn parsePrimaryExpr(p: *Parser) Error!Node.Index {
     const node_kind: Node.Kind = switch (p.tokenTag(p.tok_i)) {
         .identifier => .identifier,
         .int_literal => .int_literal,
-        else => return p.failError(.generic_token),
+        .eof => return p.failError(.unexpected_eof),
+        else => return p.failError(.expected_expr),
     };
 
     return p.addNode(.{
