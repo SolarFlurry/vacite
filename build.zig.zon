@@ -1,0 +1,7 @@
+.{
+    .name = .vm_lang,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.16.0",
+    .paths = .{""},
+    .fingerprint = 0xcb0258f20e5f442,
+}
