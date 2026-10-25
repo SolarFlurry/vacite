@@ -1,9 +1,9 @@
 const std = @import("std");
+
 const Ast = @import("Ast.zig");
 const Vm = @import("Vm.zig");
-const debug = @import("Vm/debug.zig");
-
 const Opcode = Vm.Opcode;
+const debug = @import("Vm/debug.zig");
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -67,15 +67,18 @@ fn run(
 
     try writer.print("{f}", .{ast});
 
-    // var lx: Lexer = .init(file_contents);
-    // while (true) {
-    //     const token = lx.next();
-    //     if (token.tag == .eof) break;
-    //     try writer.print(
-    //         "\x1b[36m{s}\x1b[0m -> \x1b[33m'{s}'\x1b[0m\n",
-    //         .{ @tagName(token.tag), file_contents[token.loc.start..token.loc.end] },
-    //     );
-    // }
+    const bytecode_array = try ast.bytecode(gpa);
+    defer gpa.free(bytecode_array.bytecode);
+
+    try writer.writeByte('\n');
+    try debug.debugBytecode(&bytecode_array, writer);
+    try writer.writeByte('\n');
+
+    var vm: Vm = try .init(gpa, bytecode_array, &.{});
+    defer vm.deinit();
+
+    try vm.run(writer);
+    try debug.debugStackFrame(&vm.stack_frames.items[0], writer);
 }
 
 fn bytecode(gpa: std.mem.Allocator, writer: *std.Io.Writer) !void {

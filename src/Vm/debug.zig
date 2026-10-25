@@ -25,7 +25,7 @@ pub fn debugBytecode(s: *const BytecodeArray, writer: *std.Io.Writer) !void {
     while (i < s.bytecode.len) {
         try writer.print("{d: >4} | ", .{i});
 
-        var opcode: Opcode = @enumFromInt(s.bytecode[i]);
+        var opcode: Opcode = @fromBackingInt(@intCast(s.bytecode[i]));
         const width: u8 = switch (opcode) {
             .width16 => 2,
             .width32 => 3,
@@ -35,7 +35,7 @@ pub fn debugBytecode(s: *const BytecodeArray, writer: *std.Io.Writer) !void {
 
         if (width > 1) {
             i += 1;
-            opcode = @enumFromInt(s.bytecode[i]);
+            opcode = @fromBackingInt(@intCast(s.bytecode[i]));
         }
 
         const instr = opcode.asInstr();
@@ -51,11 +51,11 @@ pub fn debugBytecode(s: *const BytecodeArray, writer: *std.Io.Writer) !void {
                 try writer.writeAll(.{ "", "w16_", "w32_", "w64_" }[comp_width - 1]);
 
                 switch (instr) {
-                    .store_to_reg => try opOneReg("str", s, writer, i, comp_width),
-                    .load_from_reg => try opOneReg("ldr", s, writer, i, comp_width),
-                    .load_int_imm => try opOneImm("ldi, ", s, writer, i, comp_width),
-                    .load_constant => try opOneImm("ldc", s, writer, i, comp_width),
-                    .func_return => try writer.writeAll("reg"),
+                    .store_to_reg => try opOneReg("star", s, writer, i, comp_width),
+                    .load_from_reg => try opOneReg("ldra", s, writer, i, comp_width),
+                    .load_int_imm => try opOneImm("ldia", s, writer, i, comp_width),
+                    .load_constant => try opOneImm("ldca", s, writer, i, comp_width),
+                    .func_return => try writer.writeAll("ret"),
                     .int_add_imm => try opOneImm("iaddi", s, writer, i, comp_width),
                     .int_sub_imm => try opOneImm("isubi", s, writer, i, comp_width),
                     .int_mul_imm => try opOneImm("imuli", s, writer, i, comp_width),

@@ -1,9 +1,12 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const BytecodeGen = @import("BytecodeGen.zig");
 const Lexer = @import("Lexer.zig");
 const Token = Lexer.Token;
 const Parser = @import("Parser.zig");
+const Vm = @import("Vm.zig");
+const BytecodeArray = Vm.BytecodeArray;
 
 const Ast = @This();
 
@@ -81,6 +84,23 @@ pub fn parse(gpa: Allocator, source: [:0]const u8) Parser.Error!Ast {
         .nodes = parser.nodes.toOwnedSlice(),
         .tokens = parser.tokens,
         .extra_data = try parser.extra_data.toOwnedSlice(gpa),
+    };
+}
+
+pub fn bytecode(s: *Ast, gpa: Allocator) BytecodeGen.Error!BytecodeArray {
+    var bytecode_gen: BytecodeGen = .{
+        .stack_size = 0,
+        .allocated_regs = 0,
+        .bytecode = .empty,
+        .gpa = gpa,
+        .ast = s,
+    };
+
+    try bytecode_gen.genBytecode();
+
+    return .{
+        .bytecode = try bytecode_gen.bytecode.toOwnedSlice(gpa),
+        .stack_size = bytecode_gen.stack_size,
     };
 }
 
