@@ -51,9 +51,10 @@ pub fn genBytecode(s: *Self) Error!void {
 fn genExpr(s: *Self, expr: Node.Index) Error!void {
     const node = s.ast.getNode(expr);
     switch (node.kind) {
-        .bin_op => try s.genBinOp(node),
+        .infix_op => try s.genBinOp(node),
         .int_literal => try s.genInt(node),
         .identifier => @panic("Variables not supported yet"),
+        .var_decl => unreachable,
         .func_decl => unreachable,
         .root => unreachable,
     }

@@ -4,31 +4,31 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const venge_mod = b.createModule(.{
+    const vacite_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const venge_exe = b.addExecutable(.{
-        .name = "venge",
-        .root_module = venge_mod,
+    const vacite_exe = b.addExecutable(.{
+        .name = "vacite",
+        .root_module = vacite_mod,
     });
 
-    b.installArtifact(venge_exe);
+    b.installArtifact(vacite_exe);
 
-    const venge_exe_run = b.addRunArtifact(venge_exe);
+    const vacite_exe_run = b.addRunArtifact(vacite_exe);
 
-    const venge_exe_check = b.addExecutable(.{
-        .name = "venge",
-        .root_module = venge_mod,
+    const vacite_exe_check = b.addExecutable(.{
+        .name = "vacite",
+        .root_module = vacite_mod,
     });
 
-    venge_exe_run.addPassthruArgs();
+    vacite_exe_run.addPassthruArgs();
 
     const run_step = b.step("run", "Run the resulting binary");
-    run_step.dependOn(&venge_exe_run.step);
+    run_step.dependOn(&vacite_exe_run.step);
 
     const check_step = b.step("check", "Check step for ZLS");
-    check_step.dependOn(&venge_exe_check.step);
+    check_step.dependOn(&vacite_exe_check.step);
 }
