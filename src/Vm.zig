@@ -1,16 +1,15 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const Vm = @This();
-
 pub const BytecodeArray = @import("Vm/BytecodeArray.zig");
+
+const Vm = @This();
 
 stack_frames: std.ArrayList(StackFrame),
 constants: []const *const anyopaque,
-arena: std.heap.ArenaAllocator,
 gpa: Allocator,
 
-const Value = extern union {
+pub const Value = extern union {
     int: i32,
     float: f64,
     // // a string that is 8 bytes or less. Null terminated if less than 8 bytes
@@ -19,7 +18,7 @@ const Value = extern union {
 };
 
 pub const StackFrame = struct {
-    instrs: BytecodeArray,
+    instrs: []const u8,
     pc: usize,
     reg_file: []Value,
     acc: Value,
@@ -85,38 +84,15 @@ pub const Opcode = enum(u8) {
     };
 };
 
-pub fn init(
-    gpa: Allocator,
-    bytecode: BytecodeArray,
-    constants: []const *const anyopaque,
-) Allocator.Error!Vm {
-    var vm: Vm = .{
-        .gpa = gpa,
-        .arena = .init(std.heap.page_allocator),
-        .constants = constants,
-        .stack_frames = .empty,
-    };
-
-    try vm.stack_frames.append(gpa, .{
-        .instrs = bytecode,
-        .pc = 0,
-        .acc = undefined,
-        .reg_file = try gpa.alloc(Value, bytecode.stack_size),
-    });
-
-    return vm;
-}
-
 pub fn deinit(s: *Vm) void {
     s.gpa.free(s.stack_frames.items[0].reg_file);
     s.stack_frames.deinit(s.gpa);
-    s.arena.deinit();
 }
 
 pub fn run(s: *Vm, writer: *std.Io.Writer) error{WriteFailed}!void {
     while (true) {
         const stack_frame = &s.stack_frames.items[0];
-        const opcode: Opcode = @fromBackingInt(@intCast(stack_frame.instrs.bytecode[stack_frame.pc]));
+        const opcode: Opcode = @fromBackingInt(@intCast(stack_frame.instrs[stack_frame.pc]));
 
         const width: u8 = switch (opcode) {
             .width16 => 2,
@@ -127,7 +103,7 @@ pub fn run(s: *Vm, writer: *std.Io.Writer) error{WriteFailed}!void {
 
         if (opcode.isWidth()) stack_frame.pc += 1;
 
-        const instr = @as(Opcode, @fromBackingInt(@intCast(stack_frame.instrs.bytecode[stack_frame.pc]))).asInstr();
+        const instr = @as(Opcode, @fromBackingInt(@intCast(stack_frame.instrs[stack_frame.pc]))).asInstr();
 
         stack_frame.pc += 1;
 
@@ -197,8 +173,8 @@ fn readBytes(comptime T: type, stack_frame: *StackFrame, width: u8) T {
 
             const thing: WorkingType = std.mem.readInt(
                 WorkingType,
-                @ptrCast(stack_frame.instrs.bytecode[stack_frame.pc .. stack_frame.pc + width]),
-                .big,
+                @ptrCast(stack_frame.instrs[stack_frame.pc .. stack_frame.pc + width]),
+                .native,
             );
 
             stack_frame.pc += width;

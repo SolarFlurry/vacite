@@ -11,13 +11,16 @@ const Opcode = Vm.Opcode;
 const Self = @This();
 
 gpa: Allocator,
+/// the allocator used to store constant Bytecode and strings
+arena: Allocator,
+constants: std.ArrayList(*const anyopaque),
 bytecode: std.ArrayList(u8),
 allocated_regs: u8,
 stack_size: u8,
 ast: *const Ast,
 
 pub fn emitOp(s: *Self, op: Opcode) Error!void {
-    std.debug.print("Emit op: .{s}\n", .{@tagName(op)});
+    // std.debug.print("Emit op: .{s}\n", .{@tagName(op)});
     try s.bytecode.append(s.gpa, @backingInt(op));
 }
 
@@ -29,7 +32,7 @@ pub fn allocReg(s: *Self) u8 {
 }
 
 pub fn emitVal(s: *Self, value: anytype) Error!void {
-    std.debug.print("Emit val: {any}\n", .{value});
+    // std.debug.print("Emit val: {any}\n", .{value});
     try s.bytecode.appendSlice(s.gpa, std.mem.asBytes(&value));
 }
 
@@ -41,21 +44,72 @@ pub fn emitIntFromToken(s: *Self, tok_i: TokenIndex) Error!void {
     try s.emitVal(int);
 }
 
+/// creates the bytecode and pushes it to the constants array
+/// layout:
+///     [0..4] len of the bytecode
+///     [4..8] number of registers (stack size)
+///     [8..] bytecode instructions
+fn createBytecode(s: *Self) Error!usize {
+    const bytecode = try s.arena.alignedAlloc(u8, .@"8", 8 + s.bytecode.items.len);
+
+    // write the bytecode len and stack size
+    std.mem.writeInt(u32, bytecode[0..4], @intCast(s.bytecode.items.len), .native);
+    std.mem.writeInt(u32, bytecode[4..8], s.stack_size, .native);
+
+    @memcpy(bytecode[8..], s.bytecode.items);
+
+    const result = s.constants.items.len;
+    try s.constants.append(s.gpa, bytecode.ptr);
+    return result;
+}
+
 pub fn genBytecode(s: *Self) Error!void {
     const root_node = s.ast.getNode(.root);
 
-    try s.genExpr(root_node.data.node);
+    for (s.ast.extraDataSlice(root_node.data.extra_range, Node.Index)) |node| {
+        try s.genDecl(node);
+    }
+}
+
+fn genDecl(s: *Self, decl: Node.Index) Error!void {
+    const node = s.ast.getNode(decl);
+    switch (node.kind) {
+        .func_decl => return s.genFuncDecl(decl),
+        .var_decl => @panic("var decls at container scope not implemented yet"),
+        else => unreachable,
+    }
+}
+
+fn genFuncDecl(s: *Self, decl: Node.Index) Error!void {
+    s.bytecode.deinit(s.gpa);
+    s.bytecode = .empty;
+    defer s.bytecode.deinit(s.gpa);
+
+    const decl_node = s.ast.getNode(decl);
+    const block = decl_node.data.node_and_node.@"1";
+    const block_node = s.ast.getNode(block);
+
+    for (s.ast.extraDataSlice(block_node.data.extra_range, Node.Index)) |node| {
+        try s.genExpr(node);
+    }
+
     try s.emitOp(.func_return);
+
+    _ = try s.createBytecode();
 }
 
 fn genExpr(s: *Self, expr: Node.Index) Error!void {
     const node = s.ast.getNode(expr);
     switch (node.kind) {
         .infix_op => try s.genBinOp(node),
+        .prefix_op => @panic("Prefix op not implemented yet"),
         .int_literal => try s.genInt(node),
         .identifier => @panic("Variables not supported yet"),
+        .block => @panic("Blocks not supported yet"),
+        .@"return" => try s.genReturn(node),
         .var_decl => unreachable,
         .func_decl => unreachable,
+        .func_proto => unreachable,
         .root => unreachable,
     }
 }
@@ -99,4 +153,12 @@ fn genBinOp(s: *Self, node: Node) Error!void {
 fn genInt(s: *Self, node: Node) Error!void {
     try s.emitOp(.load_int_imm);
     try s.emitIntFromToken(node.main_token);
+}
+
+fn genReturn(s: *Self, node: Node) Error!void {
+    if (node.data.opt.toOptional()) |expr| {
+        try s.genExpr(expr);
+    }
+
+    try s.emitOp(.func_return);
 }

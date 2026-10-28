@@ -70,18 +70,7 @@ fn run(
 
     try writer.print("{f}", .{ast});
 
-    // const bytecode_array = try ast.bytecode(gpa);
-    // defer gpa.free(bytecode_array.bytecode);
-    //
-    // try writer.writeByte('\n');
-    // try debug.debugBytecode(&bytecode_array, writer);
-    // try writer.writeByte('\n');
-    //
-    // var vm: Vm = try .init(gpa, bytecode_array, &.{});
-    // defer vm.deinit();
-    //
-    // try vm.run(writer);
-    // try debug.debugStackFrame(&vm.stack_frames.items[0], writer);
+    try ast.interpret(gpa, writer);
 }
 
 fn bytecode(gpa: std.mem.Allocator, writer: *std.Io.Writer) !void {
@@ -108,14 +97,21 @@ fn bytecode(gpa: std.mem.Allocator, writer: *std.Io.Writer) !void {
     };
 
     try writer.writeByte('\n');
-    try debug.debugBytecode(&bytecode_array, writer);
+    try debug.debugBytecode(instrs, writer);
     try writer.writeByte('\n');
 
-    var vm: Vm = try .init(
-        gpa,
-        bytecode_array,
-        constants,
-    );
+    var vm: Vm = .{
+        .stack_frames = .empty,
+        .gpa = gpa,
+        .constants = constants,
+    };
+    try vm.stack_frames.append(gpa, .{
+        .reg_file = try gpa.alloc(Vm.Value, bytecode_array.stack_size),
+        .pc = 0,
+        .instrs = bytecode_array.bytecode,
+        .acc = undefined,
+    });
+
     defer vm.deinit();
 
     try vm.run(writer);

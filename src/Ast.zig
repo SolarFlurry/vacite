@@ -7,6 +7,7 @@ const Token = Lexer.Token;
 const Parser = @import("Parser.zig");
 const Vm = @import("Vm.zig");
 const BytecodeArray = Vm.BytecodeArray;
+const debug = @import("Vm/debug.zig");
 
 const Ast = @This();
 
@@ -37,7 +38,7 @@ pub const Node = struct {
         /// main_token: `func`
         /// data: node_and_node
         ///   0: func_proto
-        ///   1: body
+        ///   1: block
         func_decl,
         /// main_token: `func`
         /// data: node
@@ -180,21 +181,50 @@ pub fn parse(gpa: Allocator, source: [:0]const u8, writer: *std.Io.Writer) (Pars
     };
 }
 
-pub fn bytecode(s: *Ast, gpa: Allocator) BytecodeGen.Error!BytecodeArray {
+pub fn interpret(s: *Ast, gpa: Allocator, writer: *std.Io.Writer) (BytecodeGen.Error || error{WriteFailed})!void {
+    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer arena.deinit();
+
     var bytecode_gen: BytecodeGen = .{
         .stack_size = 0,
         .allocated_regs = 0,
         .bytecode = .empty,
         .gpa = gpa,
+        .constants = .empty,
+        .arena = arena.allocator(),
         .ast = s,
     };
 
     try bytecode_gen.genBytecode();
 
-    return .{
-        .bytecode = try bytecode_gen.bytecode.toOwnedSlice(gpa),
-        .stack_size = bytecode_gen.stack_size,
+    var vm: Vm = .{
+        .constants = try arena.allocator().dupe(*const anyopaque, bytecode_gen.constants.items),
+        .gpa = gpa,
+        .stack_frames = .empty,
     };
+    defer vm.deinit();
+
+    bytecode_gen.constants.deinit(gpa);
+
+    const bytecode_ptr: [*]const u8 = @ptrCast(vm.constants[0]);
+    const bytecode_len = std.mem.readInt(u32, bytecode_ptr[0..4], .native);
+    const bytecode_stack_size = std.mem.readInt(u32, bytecode_ptr[4..8], .native);
+    const bytecode_instrs = bytecode_ptr[8 .. 8 + bytecode_len];
+
+    try writer.writeByte('\n');
+    try debug.debugBytecode(bytecode_instrs, writer);
+    try writer.writeByte('\n');
+
+    try vm.stack_frames.append(gpa, .{
+        .acc = undefined,
+        .instrs = bytecode_instrs,
+        .pc = 0,
+        .reg_file = try gpa.alloc(Vm.Value, bytecode_stack_size),
+    });
+
+    try vm.run(writer);
+
+    try debug.debugStackFrame(&vm.stack_frames.items[0], writer);
 }
 
 pub fn deinit(s: *Ast, gpa: std.mem.Allocator) void {

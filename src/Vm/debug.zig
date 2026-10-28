@@ -19,13 +19,13 @@ pub fn debugStackFrame(s: *const StackFrame, writer: *std.Io.Writer) !void {
     }
 }
 
-pub fn debugBytecode(s: *const BytecodeArray, writer: *std.Io.Writer) !void {
+pub fn debugBytecode(s: []const u8, writer: *std.Io.Writer) !void {
     var i: usize = 0;
 
-    while (i < s.bytecode.len) {
+    while (i < s.len) {
         try writer.print("{d: >4} | ", .{i});
 
-        var opcode: Opcode = @fromBackingInt(@intCast(s.bytecode[i]));
+        var opcode: Opcode = @fromBackingInt(@intCast(s[i]));
         const width: u8 = switch (opcode) {
             .width16 => 2,
             .width32 => 3,
@@ -35,14 +35,14 @@ pub fn debugBytecode(s: *const BytecodeArray, writer: *std.Io.Writer) !void {
 
         if (width > 1) {
             i += 1;
-            opcode = @fromBackingInt(@intCast(s.bytecode[i]));
+            opcode = @fromBackingInt(@intCast(s[i]));
         }
 
         const instr = opcode.asInstr();
         const instr_length = getInstrLength(instr, width);
 
         for (0..instr_length) |byte_offset| {
-            try writer.print("{x:0>2} ", .{s.bytecode[i + byte_offset]});
+            try writer.print("{x:0>2} ", .{s[i + byte_offset]});
         }
         try writer.splatBytesAll("   ", 4 - instr_length);
 
@@ -101,24 +101,24 @@ fn getIntWithWidth(bytes: []const u8, start: usize, comptime int_width: u8) @Int
 
 fn opOneImm(
     name: []const u8,
-    s: *const BytecodeArray,
+    s: []const u8,
     writer: *std.Io.Writer,
     i: usize,
     comptime width: u8,
 ) !void {
-    const immediate = getIntWithWidth(s.bytecode, i + 1, width);
+    const immediate = getIntWithWidth(s, i + 1, width);
 
     try writer.print("{s} #{d}", .{ name, immediate });
 }
 
 fn opOneReg(
     name: []const u8,
-    s: *const BytecodeArray,
+    s: []const u8,
     writer: *std.Io.Writer,
     i: usize,
     comptime width: u8,
 ) !void {
-    const reg = getIntWithWidth(s.bytecode, i + 1, width);
+    const reg = getIntWithWidth(s, i + 1, width);
 
     try writer.print("{s} r{d}", .{ name, reg });
 }
