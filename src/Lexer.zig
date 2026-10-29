@@ -43,6 +43,7 @@ pub const Token = struct {
         asterisk_equal,
         slash,
         slash_equal,
+        comma,
 
         pub fn lexeme(tag: Tag) []const u8 {
             return switch (tag) {
@@ -155,6 +156,10 @@ pub fn next(self: *Self) Token {
             ';' => {
                 self.index += 1;
                 result.tag = .semicolon;
+            },
+            ',' => {
+                self.index += 1;
+                result.tag = .comma;
             },
             else => continue :state .invalid,
         },

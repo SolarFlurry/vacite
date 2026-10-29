@@ -44,10 +44,10 @@ pub fn debugBytecode(s: []const u8, writer: *std.Io.Writer) !void {
         for (0..instr_length) |byte_offset| {
             try writer.print("{x:0>2} ", .{s[i + byte_offset]});
         }
-        try writer.splatBytesAll("   ", 4 - instr_length);
+        try writer.splatBytesAll("   ", 10 - instr_length);
 
         switch (width) {
-            inline 1...3 => |comp_width| {
+            inline 1...4 => |comp_width| {
                 try writer.writeAll(.{ "", "w16_", "w32_", "w64_" }[comp_width - 1]);
 
                 switch (instr) {
@@ -55,6 +55,7 @@ pub fn debugBytecode(s: []const u8, writer: *std.Io.Writer) !void {
                     .load_from_reg => try opOneReg("ldra", s, writer, i, comp_width),
                     .load_int_imm => try opOneImm("ldia", s, writer, i, comp_width),
                     .load_constant => try opOneImm("ldca", s, writer, i, comp_width),
+                    .call => try writer.writeAll("call"),
                     .func_return => try writer.writeAll("ret"),
                     .int_add_imm => try opOneImm("iaddi", s, writer, i, comp_width),
                     .int_sub_imm => try opOneImm("isubi", s, writer, i, comp_width),
@@ -78,7 +79,7 @@ pub fn debugBytecode(s: []const u8, writer: *std.Io.Writer) !void {
 
 fn getInstrLength(instr: Opcode.Instr, width: u8) usize {
     switch (instr) {
-        .str_write, .func_return => return 1,
+        .str_write, .func_return, .call => return 1,
         .load_int_imm,
         .load_constant,
         .store_to_reg,
@@ -91,7 +92,7 @@ fn getInstrLength(instr: Opcode.Instr, width: u8) usize {
         .int_sub,
         .int_mul,
         .int_div,
-        => return 1 + width,
+        => return 1 + (@as(usize, 1) << @intCast(width - 1)),
     }
 }
 

@@ -112,17 +112,19 @@ fn currentExtraIndex(p: *Parser) ExtraIndex {
     return @fromBackingInt(@intCast(p.extra_data.items.len));
 }
 
-fn addExtraStruct(p: *Parser, value: anytype) Allocator.Error!void {
+fn addExtraStruct(p: *Parser, value: anytype) Allocator.Error!ExtraIndex {
     const type_info = @typeInfo(@TypeOf(value)).@"struct";
 
-    for (type_info.field_names) |field_name| {
-        p.addExtra(@field(value, field_name));
+    const result = p.extra_data.items.len;
+
+    inline for (type_info.field_names) |field_name| {
+        _ = try p.addExtra(@field(value, field_name));
     }
 
-    try p.extra_data.appendSlice(p.gpa, std.mem.asBytes(&value));
+    return @fromBackingInt(@intCast(result));
 }
 
-fn addExtra(p: *Parser, value: anytype) Allocator.Error!void {
+fn addExtra(p: *Parser, value: anytype) Allocator.Error!ExtraIndex {
     const extra: u32 = switch (@TypeOf(value)) {
         ExtraIndex,
         Node.Index,
@@ -133,6 +135,7 @@ fn addExtra(p: *Parser, value: anytype) Allocator.Error!void {
     };
 
     try p.extra_data.append(p.gpa, extra);
+    return @fromBackingInt(@intCast(p.extra_data.items.len - 1));
 }
 
 fn listToSpan(p: *Parser, nodes: []const Node.Index) Allocator.Error!ExtraRange {
@@ -297,9 +300,59 @@ fn parsePrimaryExpr(p: *Parser) Error!?Node.Index {
 }
 
 fn parseTypeExpr(p: *Parser) Error!?Node.Index {
+    return p.parseSuffixExpr();
+}
+
+fn parseSuffixExpr(p: *Parser) Error!?Node.Index {
+    var operand = try p.parsePrimaryTypeExpr() orelse return null;
+    while (true) {
+        const expr = switch (p.tokenTag(p.tok_i)) {
+            .l_brack => @panic("index not implemented yet"),
+            .l_paren => blk: {
+                const token = p.tok_i;
+
+                const exprs = try p.parseFuncCallList();
+                const extra = try p.addExtraStruct(exprs);
+
+                break :blk try p.addNode(.{
+                    .data = .{ .node_and_extra = .{
+                        .node = operand,
+                        .extra = extra,
+                    } },
+                    .kind = .func_call,
+                    .main_token = token,
+                });
+            },
+            else => break,
+        };
+
+        operand = expr;
+    }
+
+    return operand;
+}
+
+fn parseFuncCallList(p: *Parser) Error!ExtraRange {
+    _ = p.eatToken(.l_paren);
+
+    const scratch_top = p.scratch.items.len;
+    defer p.scratch.shrinkRetainingCapacity(scratch_top);
+
+    while (p.tokenTag(p.tok_i) != .r_paren and p.tokenTag(p.tok_i) != .eof) {
+        try p.scratch.append(p.gpa, try p.parseExpr() orelse return error.ParseError);
+
+        if (p.tokenTag(p.tok_i) != .r_paren) _ = try p.expectToken(.comma);
+    }
+
+    _ = try p.expectToken(.r_paren);
+    return try p.listToSpan(p.scratch.items[scratch_top..]);
+}
+
+fn parsePrimaryTypeExpr(p: *Parser) Error!?Node.Index {
     const node_kind: Node.Kind = switch (p.tokenTag(p.tok_i)) {
         .identifier => .identifier,
         .int_literal => .int_literal,
+        .string_literal => .string_literal,
         else => return null,
     };
 
@@ -332,6 +385,8 @@ fn parseBlock(p: *Parser) Error!Node.Index {
             _ = p.eatToken(.semicolon) orelse return p.failError(.expected_semicolon);
         }
     }
+
+    _ = try p.expectToken(.r_brace);
 
     return p.addNode(.{
         .kind = .block,

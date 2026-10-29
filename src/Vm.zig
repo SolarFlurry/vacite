@@ -7,10 +7,12 @@ const Vm = @This();
 
 stack_frames: std.ArrayList(StackFrame),
 constants: []const *const anyopaque,
+acc: Value,
+arena: std.heap.ArenaAllocator,
 gpa: Allocator,
 
 pub const Value = extern union {
-    int: i32,
+    int: i64,
     float: f64,
     // // a string that is 8 bytes or less. Null terminated if less than 8 bytes
     // small_str: [8]u8,
@@ -21,7 +23,6 @@ pub const StackFrame = struct {
     instrs: []const u8,
     pc: usize,
     reg_file: []Value,
-    acc: Value,
 };
 
 pub const Opcode = enum(u8) {
@@ -39,6 +40,8 @@ pub const Opcode = enum(u8) {
     int_sub,
     int_mul,
     int_div,
+
+    call,
 
     str_write,
 
@@ -84,14 +87,25 @@ pub const Opcode = enum(u8) {
     };
 };
 
-pub fn deinit(s: *Vm) void {
-    s.gpa.free(s.stack_frames.items[0].reg_file);
-    s.stack_frames.deinit(s.gpa);
+pub fn getBytecodeArrayFromPtr(bytecode_ptr: [*]const u8) BytecodeArray {
+    const len = std.mem.readInt(u32, bytecode_ptr[0..4], .native);
+    const stack_size = std.mem.readInt(u32, bytecode_ptr[4..8], .native);
+    const instrs = bytecode_ptr[8 .. 8 + len];
+
+    return .{
+        .bytecode = instrs,
+        .stack_size = stack_size,
+    };
 }
 
-pub fn run(s: *Vm, writer: *std.Io.Writer) error{WriteFailed}!void {
+pub fn deinit(s: *Vm) void {
+    s.stack_frames.deinit(s.gpa);
+    s.arena.deinit();
+}
+
+pub fn run(s: *Vm, writer: *std.Io.Writer) error{ WriteFailed, OutOfMemory }!void {
     while (true) {
-        const stack_frame = &s.stack_frames.items[0];
+        const stack_frame = s.stack_frames.lastPtr().?;
         const opcode: Opcode = @fromBackingInt(@intCast(stack_frame.instrs[stack_frame.pc]));
 
         const width: u8 = switch (opcode) {
@@ -108,57 +122,77 @@ pub fn run(s: *Vm, writer: *std.Io.Writer) error{WriteFailed}!void {
         stack_frame.pc += 1;
 
         switch (instr) {
-            .load_int_imm => stack_frame.acc.int = readBytes(i32, stack_frame, width),
-            .load_constant => stack_frame.acc.heap_obj = @constCast(s.constants[readBytes(usize, stack_frame, width)]),
+            .load_int_imm => s.acc.int = readBytes(i64, stack_frame, width),
+            .load_constant => s.acc.heap_obj = @constCast(s.constants[readBytes(usize, stack_frame, width)]),
             .store_to_reg => {
                 const reg = readBytes(usize, stack_frame, width);
-                stack_frame.reg_file[reg] = stack_frame.acc;
+                stack_frame.reg_file[reg] = s.acc;
             },
-            .int_add_imm => stack_frame.acc.int = stack_frame.acc.int + readBytes(i32, stack_frame, width),
-            .int_sub_imm => stack_frame.acc.int = stack_frame.acc.int - readBytes(i32, stack_frame, width),
-            .int_mul_imm => stack_frame.acc.int = stack_frame.acc.int * readBytes(i32, stack_frame, width),
-            .int_div_imm => stack_frame.acc.int = @divTrunc(stack_frame.acc.int, readBytes(i32, stack_frame, width)),
+            .load_from_reg => {
+                const reg = readBytes(usize, stack_frame, width);
+                s.acc = stack_frame.reg_file[reg];
+            },
+            .int_add_imm => s.acc.int = s.acc.int + readBytes(i64, stack_frame, width),
+            .int_sub_imm => s.acc.int = s.acc.int - readBytes(i64, stack_frame, width),
+            .int_mul_imm => s.acc.int = s.acc.int * readBytes(i64, stack_frame, width),
+            .int_div_imm => s.acc.int = @divTrunc(s.acc.int, readBytes(i64, stack_frame, width)),
             .int_add => {
                 const reg = readBytes(usize, stack_frame, width);
-                stack_frame.acc.int = stack_frame.acc.int + stack_frame.reg_file[reg].int;
+                s.acc.int = s.acc.int + stack_frame.reg_file[reg].int;
             },
             .int_sub => {
                 const reg = readBytes(usize, stack_frame, width);
-                stack_frame.acc.int = stack_frame.acc.int - stack_frame.reg_file[reg].int;
+                s.acc.int = s.acc.int - stack_frame.reg_file[reg].int;
             },
             .int_mul => {
                 const reg = readBytes(usize, stack_frame, width);
-                stack_frame.acc.int = stack_frame.acc.int * stack_frame.reg_file[reg].int;
+                s.acc.int = s.acc.int * stack_frame.reg_file[reg].int;
             },
             .int_div => {
                 const reg = readBytes(usize, stack_frame, width);
-                stack_frame.acc.int = @divTrunc(stack_frame.acc.int, stack_frame.reg_file[reg].int);
+                s.acc.int = @divTrunc(s.acc.int, stack_frame.reg_file[reg].int);
             },
+
             .func_return => {
                 try writer.writeAll("returned: ");
 
-                const bytes = std.mem.asBytes(&stack_frame.acc);
+                const bytes = std.mem.asBytes(&s.acc);
 
                 for (bytes) |byte| try writer.print("{x:0>2} ", .{byte});
                 try writer.writeAll("  ");
                 for (bytes) |byte| if (byte >= 21 and byte <= 126) try writer.writeByte(byte) else try writer.writeByte('.');
                 try writer.writeByte('\n');
 
-                return;
+                s.gpa.free(s.stack_frames.last().?.reg_file);
+
+                s.stack_frames.shrinkRetainingCapacity(s.stack_frames.items.len - 1);
+
+                if (s.stack_frames.items.len == 0) return;
+            },
+
+            .call => {
+                const bytecode_ptr: [*]const u8 = @ptrCast(s.acc.heap_obj);
+                const bytecode = getBytecodeArrayFromPtr(bytecode_ptr);
+
+                try s.stack_frames.append(s.gpa, .{
+                    .reg_file = try s.gpa.alloc(Value, bytecode.stack_size),
+                    .pc = 0,
+                    .instrs = bytecode.bytecode,
+                });
             },
 
             .str_write => {
-                const raw_ptr: [*]const u8 = @ptrCast(stack_frame.acc.heap_obj);
+                const raw_ptr: [*]const u8 = @ptrCast(s.acc.heap_obj);
                 const len = std.mem.readInt(usize, raw_ptr[0..@sizeOf(usize)], .big);
                 const bytes = raw_ptr[@sizeOf(usize) .. @sizeOf(usize) + len];
 
                 try writer.writeAll(bytes);
             },
 
-            else => {
-                try writer.print("Error: Instruction not supported: '{s}'\n", .{@tagName(instr)});
-                return;
-            },
+            // else => {
+            //     try writer.print("Error: Instruction not supported: '{s}' at index {d}\n", .{ @tagName(instr), stack_frame.pc });
+            //     return;
+            // },
         }
     }
 }
@@ -168,7 +202,7 @@ fn readBytes(comptime T: type, stack_frame: *StackFrame, width: u8) T {
     const signedness = if (type_info == .int) type_info.int.signedness else .unsigned;
 
     switch (width) {
-        inline 1...3 => |w| {
+        inline 1...4 => |w| {
             const WorkingType = @Int(signedness, 1 << (w + 2));
 
             const thing: WorkingType = std.mem.readInt(
@@ -177,7 +211,7 @@ fn readBytes(comptime T: type, stack_frame: *StackFrame, width: u8) T {
                 .native,
             );
 
-            stack_frame.pc += width;
+            stack_frame.pc += 1 << (w - 1);
 
             return thing;
         },

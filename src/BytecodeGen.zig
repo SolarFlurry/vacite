@@ -1,23 +1,36 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-pub const Error = Allocator.Error;
 
 const Ast = @import("Ast.zig");
 const Node = Ast.Node;
 const TokenIndex = Ast.TokenIndex;
+pub const Symbol = @import("BytecodeGen/Symbol.zig");
 const Vm = @import("Vm.zig");
 const Opcode = Vm.Opcode;
+const debug = @import("Vm/debug.zig");
+
+pub const Error = Allocator.Error || error{ GenError, WriteFailed };
 
 const Self = @This();
 
+pub const SymbolTable = std.StringHashMap(Symbol);
+
 gpa: Allocator,
+/// the allocator used to allocate strings such as symbol table keys
+string_arena: Allocator,
 /// the allocator used to store constant Bytecode and strings
-arena: Allocator,
+constants_arena: Allocator,
 constants: std.ArrayList(*const anyopaque),
 bytecode: std.ArrayList(u8),
+symbol_table: SymbolTable,
+writer: *std.Io.Writer,
 allocated_regs: u8,
 stack_size: u8,
 ast: *const Ast,
+
+fn addSymbol(s: *Self, name: []const u8, symbol: Symbol) Error!void {
+    try s.symbol_table.put(name, symbol);
+}
 
 pub fn emitOp(s: *Self, op: Opcode) Error!void {
     // std.debug.print("Emit op: .{s}\n", .{@tagName(op)});
@@ -50,7 +63,10 @@ pub fn emitIntFromToken(s: *Self, tok_i: TokenIndex) Error!void {
 ///     [4..8] number of registers (stack size)
 ///     [8..] bytecode instructions
 fn createBytecode(s: *Self) Error!usize {
-    const bytecode = try s.arena.alignedAlloc(u8, .@"8", 8 + s.bytecode.items.len);
+    const bytecode = try s.constants_arena.alignedAlloc(u8, .@"8", 8 + s.bytecode.items.len);
+
+    try debug.debugBytecode(s.bytecode.items, s.writer);
+    try s.writer.writeByte('\n');
 
     // write the bytecode len and stack size
     std.mem.writeInt(u32, bytecode[0..4], @intCast(s.bytecode.items.len), .native);
@@ -81,7 +97,6 @@ fn genDecl(s: *Self, decl: Node.Index) Error!void {
 }
 
 fn genFuncDecl(s: *Self, decl: Node.Index) Error!void {
-    s.bytecode.deinit(s.gpa);
     s.bytecode = .empty;
     defer s.bytecode.deinit(s.gpa);
 
@@ -95,7 +110,14 @@ fn genFuncDecl(s: *Self, decl: Node.Index) Error!void {
 
     try s.emitOp(.func_return);
 
-    _ = try s.createBytecode();
+    const value = try s.createBytecode();
+
+    const token = s.ast.tokens.get(decl_node.main_token + 1);
+
+    try s.addSymbol(
+        try s.string_arena.dupe(u8, s.ast.source[token.loc.start..token.loc.end]),
+        .{ .value = value },
+    );
 }
 
 fn genExpr(s: *Self, expr: Node.Index) Error!void {
@@ -104,8 +126,20 @@ fn genExpr(s: *Self, expr: Node.Index) Error!void {
         .infix_op => try s.genBinOp(node),
         .prefix_op => @panic("Prefix op not implemented yet"),
         .int_literal => try s.genInt(node),
-        .identifier => @panic("Variables not supported yet"),
+        .identifier => {
+            const token = s.ast.tokens.get(node.main_token);
+            const name = s.ast.source[token.loc.start..token.loc.end];
+
+            try s.emitOp(.width64);
+            try s.emitOp(.load_constant);
+            try s.emitVal(s.symbol_table.get(name) orelse return error.GenError);
+        },
         .block => @panic("Blocks not supported yet"),
+        .string_literal => @panic("Strings not implemented yet"),
+        .func_call => {
+            try s.genExpr(node.data.node_and_extra.node);
+            try s.emitOp(.call);
+        },
         .@"return" => try s.genReturn(node),
         .var_decl => unreachable,
         .func_decl => unreachable,

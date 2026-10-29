@@ -51,15 +51,16 @@ pub const Node = struct {
         var_decl,
         identifier,
         int_literal,
-        /// main_token: the operator
+        string_literal,
+        /// main_token: operator
         /// data: node_and_node
         ///    0: lhs
         ///    1: rhs
         infix_op,
-        /// main_token: the operator
+        /// main_token: operator
         /// data: node
         prefix_op,
-        /// main_token: the l_brace
+        /// main_token: `{`
         /// data: extra_range
         ///    points to the statements
         block,
@@ -67,6 +68,11 @@ pub const Node = struct {
         /// data: opt
         ///    optional return value
         @"return",
+        /// main_token: `(`
+        /// data: node_and_extra
+        ///    node: the function
+        ///    extra: points to ExtraRange
+        func_call,
     };
 
     pub const Data = union {
@@ -74,7 +80,10 @@ pub const Node = struct {
         opt: OptionalIndex,
         node_and_node: struct { Index, Index },
         node_and_opt: struct { Index, OptionalIndex },
-        extra_and_node: struct { ExtraIndex, Index },
+        node_and_extra: struct {
+            node: Index,
+            extra: ExtraIndex,
+        },
         extra_range: ExtraRange,
     };
 
@@ -181,50 +190,55 @@ pub fn parse(gpa: Allocator, source: [:0]const u8, writer: *std.Io.Writer) (Pars
     };
 }
 
-pub fn interpret(s: *Ast, gpa: Allocator, writer: *std.Io.Writer) (BytecodeGen.Error || error{WriteFailed})!void {
-    var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    defer arena.deinit();
+pub fn genBytecode(s: *Ast, gpa: Allocator, writer: *std.Io.Writer) (BytecodeGen.Error || error{WriteFailed})!Vm {
+    var constants_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+
+    var string_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer string_arena.deinit();
 
     var bytecode_gen: BytecodeGen = .{
+        .writer = writer,
         .stack_size = 0,
         .allocated_regs = 0,
         .bytecode = .empty,
         .gpa = gpa,
         .constants = .empty,
-        .arena = arena.allocator(),
+        .constants_arena = constants_arena.allocator(),
+        .string_arena = string_arena.allocator(),
+        .symbol_table = .init(gpa),
         .ast = s,
     };
+    defer bytecode_gen.symbol_table.deinit();
 
     try bytecode_gen.genBytecode();
 
     var vm: Vm = .{
-        .constants = try arena.allocator().dupe(*const anyopaque, bytecode_gen.constants.items),
+        .arena = constants_arena,
+        .constants = try constants_arena.allocator().dupe(*const anyopaque, bytecode_gen.constants.items),
         .gpa = gpa,
         .stack_frames = .empty,
+        .acc = undefined,
     };
-    defer vm.deinit();
 
     bytecode_gen.constants.deinit(gpa);
 
-    const bytecode_ptr: [*]const u8 = @ptrCast(vm.constants[0]);
-    const bytecode_len = std.mem.readInt(u32, bytecode_ptr[0..4], .native);
-    const bytecode_stack_size = std.mem.readInt(u32, bytecode_ptr[4..8], .native);
-    const bytecode_instrs = bytecode_ptr[8 .. 8 + bytecode_len];
+    const bytecode_ptr: [*]const u8 = @ptrCast(vm.constants[
+        (bytecode_gen.symbol_table.get("main") orelse {
+            try writer.writeAll("No main function\n");
+            return error.GenError;
+        }).value
+    ]);
 
-    try writer.writeByte('\n');
-    try debug.debugBytecode(bytecode_instrs, writer);
-    try writer.writeByte('\n');
+    const bytecode = Vm.getBytecodeArrayFromPtr(bytecode_ptr);
+    std.debug.print("From ast: {d}\n", .{bytecode.bytecode.len});
 
     try vm.stack_frames.append(gpa, .{
-        .acc = undefined,
-        .instrs = bytecode_instrs,
+        .instrs = bytecode.bytecode,
         .pc = 0,
-        .reg_file = try gpa.alloc(Vm.Value, bytecode_stack_size),
+        .reg_file = try gpa.alloc(Vm.Value, bytecode.stack_size),
     });
 
-    try vm.run(writer);
-
-    try debug.debugStackFrame(&vm.stack_frames.items[0], writer);
+    return vm;
 }
 
 pub fn deinit(s: *Ast, gpa: std.mem.Allocator) void {

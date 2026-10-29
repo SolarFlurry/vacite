@@ -19,7 +19,6 @@ pub fn main(init: std.process.Init) !void {
         try writer.writeAll(
             \\venge --help
             \\    venge run <file>     Runs the file at <file>
-            \\    venge bytecode       BYTECODE!!
             \\
         );
         return;
@@ -29,9 +28,9 @@ pub fn main(init: std.process.Init) !void {
         return run(arena, init.gpa, init.io, writer, args);
     }
 
-    if (std.mem.eql(u8, args[1], "bytecode")) {
-        return bytecode(init.gpa, writer);
-    }
+    // if (std.mem.eql(u8, args[1], "bytecode")) {
+    //     return bytecode(init.gpa, writer);
+    // }
 
     try writer.print("[Error] Unknown command '{s}'\n", .{args[1]});
 }
@@ -68,9 +67,12 @@ fn run(
     };
     defer ast.deinit(gpa);
 
-    try writer.print("{f}", .{ast});
+    // try writer.print("{f}", .{ast});
 
-    try ast.interpret(gpa, writer);
+    var vm = try ast.genBytecode(gpa, writer);
+    defer vm.deinit();
+
+    try vm.run(writer);
 }
 
 fn bytecode(gpa: std.mem.Allocator, writer: *std.Io.Writer) !void {
