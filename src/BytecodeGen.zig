@@ -166,7 +166,7 @@ fn genBinOp(s: *Self, node: Node) Error!void {
     const rhs = s.ast.getNode(node.data.node_and_node.@"1");
     if (rhs.kind == .int_literal) {
         // if rhs is literal we can use the imm version instead
-        // subtracting 4 to non-imm int op results in imm [Vm.zig:35]
+        // subtracting 4 to non-imm int op results in imm [`@import("Vm.zig").Opcode`]
         const imm_op: Opcode = @fromBackingInt(@backingInt(op) - 4);
 
         try s.genExpr(node.data.node_and_node.@"0");
