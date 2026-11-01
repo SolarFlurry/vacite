@@ -26,6 +26,7 @@ symbol_table: SymbolTable,
 writer: *std.Io.Writer,
 allocated_regs: u8,
 stack_size: u8,
+last_emitted_op: Opcode = .call,
 ast: *const Ast,
 
 fn addSymbol(s: *Self, name: []const u8, symbol: Symbol) Error!void {
@@ -35,6 +36,7 @@ fn addSymbol(s: *Self, name: []const u8, symbol: Symbol) Error!void {
 pub fn emitOp(s: *Self, op: Opcode) Error!void {
     // std.debug.print("Emit op: .{s}\n", .{@tagName(op)});
     try s.bytecode.append(s.gpa, @backingInt(op));
+    s.last_emitted_op = op;
 }
 
 pub fn allocReg(s: *Self) u8 {
@@ -108,7 +110,9 @@ fn genFuncDecl(s: *Self, decl: Node.Index) Error!void {
         try s.genExpr(node);
     }
 
-    try s.emitOp(.func_return);
+    if (s.last_emitted_op != .func_return) {
+        try s.emitOp(.func_return);
+    }
 
     const value = try s.createBytecode();
 

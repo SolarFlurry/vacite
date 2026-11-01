@@ -216,7 +216,9 @@ pub fn genBytecode(s: *Ast, gpa: Allocator, writer: *std.Io.Writer) (BytecodeGen
         .arena = constants_arena,
         .constants = try constants_arena.allocator().dupe(*const anyopaque, bytecode_gen.constants.items),
         .gpa = gpa,
-        .stack_frames = .empty,
+        .stack = .empty,
+        .fp = 0,
+        .pc = 0,
         .acc = undefined,
     };
 
@@ -230,13 +232,8 @@ pub fn genBytecode(s: *Ast, gpa: Allocator, writer: *std.Io.Writer) (BytecodeGen
     ]);
 
     const bytecode = Vm.getBytecodeArrayFromPtr(bytecode_ptr);
-    std.debug.print("From ast: {d}\n", .{bytecode.bytecode.len});
 
-    try vm.stack_frames.append(gpa, .{
-        .instrs = bytecode.bytecode,
-        .pc = 0,
-        .reg_file = try gpa.alloc(Vm.Value, bytecode.stack_size),
-    });
+    try vm.pushStackFrame(bytecode.bytecode, bytecode.stack_size);
 
     return vm;
 }
