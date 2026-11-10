@@ -16,11 +16,11 @@ const Self = @This();
 pub const SymbolTable = std.StringHashMap(Symbol);
 
 gpa: Allocator,
-/// the allocator used to allocate strings such as symbol table keys
-string_arena: Allocator,
 /// the allocator used to store constant Bytecode and strings
 constants_arena: Allocator,
+/// the array of pointers to constants allocated in `constants_arena`
 constants: std.ArrayList(*const anyopaque),
+/// the in progress bytecode emitted
 bytecode: std.ArrayList(u8),
 symbol_table: SymbolTable,
 writer: *std.Io.Writer,
@@ -114,15 +114,15 @@ fn genFuncDecl(s: *Self, decl: Node.Index) Error!void {
         try s.emitOp(.func_return);
     }
 
-    const value = try s.createBytecode();
-
-    const token = s.ast.tokens.get(decl_node.main_token + 1);
+    const constant = try s.createBytecode();
 
     try s.addSymbol(
-        try s.string_arena.dupe(u8, s.ast.source[token.loc.start..token.loc.end]),
-        .{ .value = value },
+        s.ast.tokenString(decl_node.main_token + 1),
+        .{ .value = .{ .constant = constant } },
     );
 }
+
+// fn genVarDecl(s: *Self, decl: Node.Index) Error!void {}
 
 fn genExpr(s: *Self, expr: Node.Index) Error!void {
     const node = s.ast.getNode(expr);
@@ -136,7 +136,7 @@ fn genExpr(s: *Self, expr: Node.Index) Error!void {
 
             try s.emitOp(.width64);
             try s.emitOp(.load_constant);
-            try s.emitVal(s.symbol_table.get(name) orelse return error.GenError);
+            try s.emitVal((s.symbol_table.get(name) orelse return error.GenError).value.constant);
         },
         .block => @panic("Blocks not supported yet"),
         .string_literal => @panic("Strings not implemented yet"),

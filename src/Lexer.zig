@@ -45,13 +45,36 @@ pub const Token = struct {
         slash_equal,
         comma,
 
-        pub fn lexeme(tag: Tag) []const u8 {
+        pub fn describe(tag: Tag) []const u8 {
             return switch (tag) {
-                .minus => "-",
-                .plus => "+",
-                .asterisk => "*",
-                .slash => "/",
-                else => unreachable,
+                .invalid => "(invalid)",
+                .eof => "(eof)",
+                .identifier => "an identifier",
+                .int_literal => "an integer literal",
+                .float_literal => "a floating point literal",
+                .string_literal => "a string literal",
+                .keyword_let => "the keyword 'let'",
+                .keyword_var => "the keyword 'var'",
+                .keyword_func => "the keyword 'func'",
+                .keyword_return => "the keyword 'return'",
+                .keyword_continue => "the keyword 'continue'",
+                .keyword_break => "the keyword 'break'",
+                .keyword_if => "the keyword 'if'",
+                .keyword_then => "the keyword 'then'",
+                .keyword_else => "the keyword 'else'",
+                .keyword_while => "the keyword 'while'",
+                .l_brace => "'{",
+                .r_brace => "'}'",
+                .l_paren => "'('",
+                .r_paren => "')'",
+                .l_brack => "'['",
+                .r_brack => "']'",
+                .semicolon => "';'",
+                .plus => "'+'",
+                .minus => "'-'",
+                .asterisk => "'*'",
+                .slash => "'/'",
+                else => "(unknown)",
             };
         }
     };

@@ -6,6 +6,7 @@ const TokenIndex = Ast.TokenIndex;
 const Node = Ast.Node;
 const ExtraIndex = Ast.ExtraIndex;
 const ExtraRange = Ast.ExtraRange;
+const Diagnostics = @import("Diagnostics.zig");
 const Lexer = @import("Lexer.zig");
 const Token = Lexer.Token;
 
@@ -18,43 +19,23 @@ scratch: std.ArrayList(Node.Index),
 extra_data: std.ArrayList(u32),
 tok_i: TokenIndex,
 nodes: Ast.NodeList,
-errors: std.ArrayList(ParseError),
-
-const ParseError = struct {
-    kind: Kind,
-    token: TokenIndex,
-
-    const Kind = enum {
-        generic_token,
-        unexpected_eof,
-        expected_expr,
-        expected_decl,
-        expected_semicolon,
-    };
-
-    pub fn format(s: ParseError, writer: *std.Io.Writer, source: [:0]const u8, tokens: Ast.TokenList.Slice) std.Io.Writer.Error!void {
-        try writer.writeAll("\x1b[31mError\x1b[0m: ");
-        const token = tokens.get(s.token);
-        const token_string = source[token.loc.start..token.loc.end];
-        switch (s.kind) {
-            .generic_token => try writer.print("Bad token '{s}'\n", .{token_string}),
-            .unexpected_eof => try writer.writeAll("Unexpected EOF\n"),
-            .expected_expr => try writer.print("Unexpected '{s}', expected an expression\n", .{token_string}),
-            .expected_decl => try writer.print("Unexpected '{s}', expected a declaration\n", .{token_string}),
-            .expected_semicolon => try writer.print("Unexpected '{s}', expected a semicolon\n", .{token_string}),
-        }
-    }
-};
+diagnostics: Diagnostics,
 
 pub const Error = error{ParseError} || Allocator.Error;
 
-fn failError(p: *Parser, kind: ParseError.Kind) Error {
+fn failError(p: *Parser, data: Diagnostics.Diagnostic.Data) Error {
     @branchHint(.cold);
-    try p.errors.append(p.gpa, .{
-        .kind = kind,
-        .token = p.tok_i,
-    });
+    try p.resilientError(data);
     return error.ParseError;
+}
+
+/// only returns error.ParseError if the current token is `.eof`
+fn resilientError(p: *Parser, data: Diagnostics.Diagnostic.Data) Error!void {
+    try p.diagnostics.add(.{
+        .level = .@"error",
+        .data = data,
+    });
+    if (p.tokenTag(p.tok_i) == .eof) return error.ParseError;
 }
 
 pub fn parseRoot(p: *Parser) Error!void {
@@ -82,7 +63,7 @@ fn tokenTag(p: *Parser, tok: TokenIndex) Token.Tag {
 
 fn expectToken(p: *Parser, expected: Lexer.Token.Tag) Error!TokenIndex {
     if (p.tokens.get(p.tok_i).tag != expected) {
-        return p.failError(.generic_token);
+        return p.failError(.{ .expected_token = .{ .expected = expected, .unexpected = p.tok_i } });
     }
     return p.nextToken();
 }
@@ -156,7 +137,7 @@ fn parseContainerMembers(p: *Parser) Error!ExtraRange {
             .keyword_func,
             => try p.parseDecl(),
             .eof, .r_brace => break,
-            else => return p.failError(.expected_decl),
+            else => return p.failError(.{ .expected_decl = p.tok_i }),
         };
 
         try p.scratch.append(p.gpa, node);
@@ -184,8 +165,11 @@ fn parseDecl(p: *Parser) Error!Node.Index {
 fn parseVarDecl(p: *Parser) Error!Node.Index {
     const decl_token = p.eatToken(.keyword_let).?;
     _ = try p.expectToken(.identifier);
+
+    var type_expr: Node.OptionalIndex = .none;
+
     if (p.tokenTag(p.tok_i) != .equal) {
-        // TODO: typed variable declerations
+        type_expr = .fromOptional(try p.parseTypeExpr());
     }
 
     _ = try p.expectToken(.equal);
@@ -194,7 +178,7 @@ fn parseVarDecl(p: *Parser) Error!Node.Index {
     return p.addNode(.{
         .kind = .var_decl,
         .main_token = decl_token,
-        .data = .{ .node_and_opt = .{ initial_value, .none } },
+        .data = .{ .node_and_opt = .{ initial_value, type_expr } },
     });
 }
 
@@ -204,10 +188,17 @@ fn parseFnProto(p: *Parser) Error!?Node.Index {
     const func_node_idx = try p.reserveNode();
 
     _ = p.eatToken(.identifier);
-    _ = p.eatToken(.l_paren);
-    _ = p.eatToken(.r_paren);
+    if (p.tokenTag(p.tok_i) == .l_paren) {
+        _ = p.nextToken();
+        _ = try p.expectToken(.r_paren);
+    } else {
+        try p.resilientError(.{ .expected_token = .{
+            .unexpected = p.tok_i,
+            .expected = .l_paren,
+        } });
+    }
 
-    const return_type = try p.parseTypeExpr() orelse return p.failError(.expected_expr);
+    const return_type = try p.parseTypeExpr() orelse return p.failError(.{ .expected_expr = p.tok_i });
 
     return p.setNode(func_node_idx, .{
         .main_token = fn_token,
@@ -241,7 +232,7 @@ const oper_table = std.enums.directEnumArrayDefault(Token.Tag, OperInfo, .{ .pre
 });
 
 fn expectExpr(p: *Parser) Error!Node.Index {
-    return try p.parseExpr() orelse return p.failError(.expected_expr);
+    return try p.parseExpr() orelse return p.failError(.{ .expected_expr = p.tok_i });
 }
 
 fn parseExpr(p: *Parser) Error!?Node.Index {
@@ -375,14 +366,17 @@ fn parseBlock(p: *Parser) Error!Node.Index {
             .keyword_let,
             .keyword_var,
             => try p.parseVarDecl(),
-            .eof => return p.failError(.unexpected_eof),
+            .eof => return p.failError(.{ .unexpected_token = p.tok_i }),
             else => try p.expectExpr(),
         };
 
         try p.scratch.append(p.gpa, node);
 
         if (p.tokenTag(p.tok_i - 1) != .r_brace) {
-            _ = p.eatToken(.semicolon) orelse return p.failError(.expected_semicolon);
+            _ = p.eatToken(.semicolon) orelse return p.failError(.{ .expected_token = .{
+                .unexpected = p.tok_i,
+                .expected = .semicolon,
+            } });
         }
     }
 

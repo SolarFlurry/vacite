@@ -41,8 +41,9 @@ pub const Node = struct {
         ///   1: block
         func_decl,
         /// main_token: `func`
-        /// data: node
-        ///   the return type
+        /// data: node_and_extra
+        ///   node: the return type
+        ///   extra: ExtraRange to param nodes
         func_proto,
         /// main_token: `let` or `var`
         /// data: node_and_opt
@@ -111,6 +112,11 @@ pub const Node = struct {
             return .none;
         }
     };
+
+    pub const Param = struct {
+        ident: TokenIndex,
+        type: Node.Index,
+    };
 };
 
 pub fn getNode(s: *const Ast, node: Node.Index) Node {
@@ -119,6 +125,11 @@ pub fn getNode(s: *const Ast, node: Node.Index) Node {
 
 pub fn tokenTag(s: *const Ast, token: TokenIndex) Token.Tag {
     return s.tokens.get(token).tag;
+}
+
+pub fn tokenString(s: *const Ast, token: TokenIndex) []const u8 {
+    const tok = s.tokens.get(token);
+    return s.source[tok.loc.start..tok.loc.end];
 }
 
 pub fn extraData(s: *const Ast, extra: ExtraIndex, comptime T: type) T {
@@ -144,6 +155,10 @@ pub fn extraDataSlice(s: Ast, range: ExtraRange, comptime T: type) []const T {
 pub fn parse(gpa: Allocator, source: [:0]const u8, writer: *std.Io.Writer) (Parser.Error || error{WriteFailed})!Ast {
     var tokens: TokenList = .empty;
 
+    errdefer {
+        tokens.deinit(gpa);
+    }
+
     var lexer: Lexer = .init(source);
     while (true) {
         const token = lexer.next();
@@ -159,35 +174,40 @@ pub fn parse(gpa: Allocator, source: [:0]const u8, writer: *std.Io.Writer) (Pars
         .nodes = .empty,
         .tok_i = 0,
         .extra_data = .empty,
-        .errors = .empty,
         .scratch = .empty,
+        .diagnostics = .{
+            .diagnostics = .empty,
+            .gpa = gpa,
+        },
     };
-    errdefer {
-        parser.tokens.deinit(gpa);
-        parser.nodes.deinit(gpa);
-        parser.extra_data.deinit(gpa);
-    }
+
     defer {
         parser.scratch.deinit(gpa);
-        parser.errors.deinit(gpa);
+        parser.diagnostics.diagnostics.deinit(gpa);
     }
 
     const result = parser.parseRoot();
-    result catch |err| {
-        if (err != error.ParseError) return err;
-        for (parser.errors.items) |error_data| {
-            try error_data.format(writer, source, parser.tokens);
-        }
-
-        return err;
-    };
-
-    return .{
+    var ast: Ast = .{
         .source = source,
         .nodes = parser.nodes.toOwnedSlice(),
         .tokens = parser.tokens,
         .extra_data = try parser.extra_data.toOwnedSlice(gpa),
     };
+
+    errdefer {
+        ast.nodes.deinit(gpa);
+        ast.tokens.deinit(gpa);
+        gpa.free(ast.extra_data);
+    }
+
+    result catch |err| {
+        if (err != error.ParseError) return err;
+        try parser.diagnostics.write(&ast, writer);
+
+        return err;
+    };
+
+    return ast;
 }
 
 pub fn genBytecode(s: *Ast, gpa: Allocator, writer: *std.Io.Writer) (BytecodeGen.Error || error{WriteFailed})!Vm {
@@ -204,7 +224,6 @@ pub fn genBytecode(s: *Ast, gpa: Allocator, writer: *std.Io.Writer) (BytecodeGen
         .gpa = gpa,
         .constants = .empty,
         .constants_arena = constants_arena.allocator(),
-        .string_arena = string_arena.allocator(),
         .symbol_table = .init(gpa),
         .ast = s,
     };
@@ -228,7 +247,7 @@ pub fn genBytecode(s: *Ast, gpa: Allocator, writer: *std.Io.Writer) (BytecodeGen
         (bytecode_gen.symbol_table.get("main") orelse {
             try writer.writeAll("No main function\n");
             return error.GenError;
-        }).value
+        }).value.constant
     ]);
 
     const bytecode = Vm.getBytecodeArrayFromPtr(bytecode_ptr);
@@ -277,7 +296,7 @@ fn printNode(s: *const Ast, writer: *std.Io.Writer, node_i: Node.Index, indent: 
     switch (node.kind) {
         .root => unreachable,
         .infix_op => {
-            try writer.print(" \x1b[32m'{s}'\x1b[0m:\n", .{s.tokenTag(node.main_token).lexeme()});
+            try writer.print(" \x1b[32m'{s}'\x1b[0m:\n", .{s.tokenString(node.main_token)});
             try s.printNode(writer, node.data.node_and_node.@"0", indent + 1);
             try s.printNode(writer, node.data.node_and_node.@"1", indent + 1);
         },
@@ -312,7 +331,10 @@ fn printNode(s: *const Ast, writer: *std.Io.Writer, node_i: Node.Index, indent: 
             try s.printNode(writer, node.data.node_and_node.@"0", indent + 1);
             try s.printNode(writer, node.data.node_and_node.@"1", indent + 1);
         },
-        .identifier => unreachable,
+        .identifier => {
+            const ident = s.tokens.get(node.main_token);
+            try writer.print(" `{s}`\n", .{s.source[ident.loc.start..ident.loc.end]});
+        },
         else => try writer.writeByte('\n'),
     }
 }

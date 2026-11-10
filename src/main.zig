@@ -67,7 +67,7 @@ fn run(
     };
     defer ast.deinit(gpa);
 
-    // try writer.print("{f}", .{ast});
+    try writer.print("{f}", .{ast});
 
     var vm = try ast.genBytecode(gpa, writer);
     defer vm.deinit();
