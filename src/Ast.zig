@@ -42,12 +42,12 @@ pub const Node = struct {
         func_decl,
         /// main_token: `func`
         /// data: node_and_extra
-        ///   node: the return type
+        ///   opt: the return type. It is `.none` only when a parsing error occurred
         ///   extra: ExtraRange to param nodes
         func_proto,
         /// main_token: `let` or `var`
         /// data: node_and_opt
-        ///   node: the intial expression
+        ///   node: the initial expression
         ///   opt: and optional type
         var_decl,
         identifier,

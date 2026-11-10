@@ -5,9 +5,11 @@ const Self = @This();
 source: [:0]const u8,
 index: usize,
 
+pub const Span = struct { start: usize, end: usize };
+
 pub const Token = struct {
     tag: Tag,
-    loc: struct { start: usize, end: usize },
+    loc: Span,
 
     pub const Tag = enum {
         invalid,
@@ -281,6 +283,10 @@ pub fn next(self: *Self) Token {
                 '=' => {
                     self.index += 1;
                     result.tag = .slash_equal;
+                },
+                '/' => {
+                    self.index += 1;
+                    continue :state .comment;
                 },
                 else => result.tag = .slash,
             }

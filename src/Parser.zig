@@ -151,7 +151,10 @@ fn parseDecl(p: *Parser) Error!Node.Index {
     const is_fn = try p.parseFnProto();
 
     if (is_fn) |fn_proto| {
-        const block = try p.parseBlock();
+        const block = try p.parseBlock() orelse return p.failError(.{ .expected_token = .{
+            .unexpected = p.tok_i,
+            .expected = .l_brace,
+        } });
         return p.addNode(.{
             .main_token = start_token,
             .data = .{ .node_and_node = .{ fn_proto, block } },
@@ -198,11 +201,12 @@ fn parseFnProto(p: *Parser) Error!?Node.Index {
         } });
     }
 
-    const return_type = try p.parseTypeExpr() orelse return p.failError(.{ .expected_expr = p.tok_i });
+    const return_type: Node.OptionalIndex = .fromOptional(try p.parseTypeExpr());
+    if (return_type == .none) try p.resilientError(.{ .expected_expr = p.tok_i });
 
     return p.setNode(func_node_idx, .{
         .main_token = fn_token,
-        .data = .{ .node = return_type },
+        .data = .{ .opt = return_type },
         .kind = .func_proto,
     });
 }
@@ -354,8 +358,8 @@ fn parsePrimaryTypeExpr(p: *Parser) Error!?Node.Index {
     });
 }
 
-fn parseBlock(p: *Parser) Error!Node.Index {
-    const start_token = p.eatToken(.l_brace).?;
+fn parseBlock(p: *Parser) Error!?Node.Index {
+    const start_token = p.eatToken(.l_brace) orelse return null;
 
     const scratch_top = p.scratch.items.len;
     defer p.scratch.shrinkRetainingCapacity(scratch_top);
@@ -366,7 +370,7 @@ fn parseBlock(p: *Parser) Error!Node.Index {
             .keyword_let,
             .keyword_var,
             => try p.parseVarDecl(),
-            .eof => return p.failError(.{ .unexpected_token = p.tok_i }),
+            .eof => return p.failError(.{ .expected_closing = .r_brace }),
             else => try p.expectExpr(),
         };
 
@@ -382,7 +386,7 @@ fn parseBlock(p: *Parser) Error!Node.Index {
 
     _ = try p.expectToken(.r_brace);
 
-    return p.addNode(.{
+    return try p.addNode(.{
         .kind = .block,
         .main_token = start_token,
         .data = .{ .extra_range = try p.listToSpan(p.scratch.items[scratch_top..]) },

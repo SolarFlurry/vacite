@@ -219,6 +219,7 @@ pub const Diagnostic = struct {
         },
         expected_expr: Ast.TokenIndex,
         expected_decl: Ast.TokenIndex,
+        expected_closing: Token.Tag,
     };
 
     pub fn write(s: *const Diagnostic, ast: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
@@ -233,6 +234,7 @@ pub const Diagnostic = struct {
             .expected_token => |d| try print(writer, "Unexpected <y>\"{s}\"<0>, expected {s}\n", .{ tokenString(ast, d.unexpected), d.expected.describe() }),
             .expected_expr => |d| try print(writer, "Unexpected <y>\"{s}\"<0>, expected an expression\n", .{tokenString(ast, d)}),
             .expected_decl => |d| try print(writer, "Unexpected <y>\"{s}\"<0>, expected a declaration\n", .{tokenString(ast, d)}),
+            .expected_closing => |d| try print(writer, "Expected matching closing {s}\n", .{d.describe()}),
         }
     }
 };
