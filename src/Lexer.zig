@@ -49,7 +49,6 @@ pub const Token = struct {
 
         pub fn describe(tag: Tag) []const u8 {
             return switch (tag) {
-                .invalid => "(invalid)",
                 .eof => "(eof)",
                 .identifier => "an identifier",
                 .int_literal => "an integer literal",
@@ -72,10 +71,17 @@ pub const Token = struct {
                 .l_brack => "'['",
                 .r_brack => "']'",
                 .semicolon => "';'",
+                .equal => "'='",
+                .equal_equal => "'=='",
                 .plus => "'+'",
+                .plus_equal => "'+=",
                 .minus => "'-'",
+                .minus_equal => "'-='",
                 .asterisk => "'*'",
+                .asterisk_equal => "'*='",
                 .slash => "'/'",
+                .slash_equal => "'/='",
+                .comma => "','",
                 else => "(unknown)",
             };
         }
@@ -210,7 +216,7 @@ pub fn next(self: *Self) Token {
         .identifier => {
             self.index += 1;
             switch (self.source[self.index]) {
-                'a'...'z', 'A'...'Z', '_', '0'...'9', '\'' => continue :state .identifier,
+                'a'...'z', 'A'...'Z', '_', '0'...'9', '-' => continue :state .identifier,
                 else => {
                     const ident = self.source[result.loc.start..self.index];
                     if (Token.keywords.get(ident)) |tag| {

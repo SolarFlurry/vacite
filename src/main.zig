@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const Ast = @import("Ast.zig");
+const Diagnostics = @import("Diagnostics.zig");
 const Vm = @import("Vm.zig");
 const Opcode = Vm.Opcode;
 const debug = @import("Vm/debug.zig");
@@ -61,7 +62,10 @@ fn run(
 
     _ = try file.readPositionalAll(io, file_contents, 0);
 
-    var ast = Ast.parse(gpa, file_contents, writer) catch |err| {
+    var diagnostics: Diagnostics = .init(gpa);
+    defer diagnostics.deinit();
+
+    var ast = Ast.parse(gpa, file_contents, writer, &diagnostics) catch |err| {
         if (err != error.ParseError) return err;
         return;
     };
@@ -69,7 +73,11 @@ fn run(
 
     try writer.print("{f}", .{ast});
 
-    var vm = try ast.genBytecode(gpa, writer);
+    var vm = ast.genBytecode(gpa, writer, &diagnostics) catch |err| {
+        if (err != error.GenError) return err;
+        try diagnostics.reportAll(&ast, writer);
+        return;
+    };
     defer vm.deinit();
 
     try vm.run(writer);

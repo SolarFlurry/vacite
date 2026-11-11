@@ -2,8 +2,10 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const BytecodeGen = @import("BytecodeGen.zig");
+const Diagnostics = @import("Diagnostics.zig");
 const Lexer = @import("Lexer.zig");
 const Token = Lexer.Token;
+const Span = Lexer.Span;
 const Parser = @import("Parser.zig");
 const Vm = @import("Vm.zig");
 const BytecodeArray = Vm.BytecodeArray;
@@ -132,6 +134,25 @@ pub fn tokenString(s: *const Ast, token: TokenIndex) []const u8 {
     return s.source[tok.loc.start..tok.loc.end];
 }
 
+/// returns the `Span` of the first line of an inner `Span`
+pub fn getLine(s: *const Ast, span: Span) Span {
+    var line_start: usize = span.start;
+    var line_end: usize = span.start;
+    while (line_start > 0 and s.source[line_start - 1] != '\n') line_start -= 1;
+    while (line_end < s.source.len and s.source[line_end] != '\n') line_end += 1;
+
+    return .{ .start = line_start, .end = line_end };
+}
+
+/// counts the number of newlines in a span
+pub fn countLines(s: *const Ast, span: Span) usize {
+    var count: usize = 0;
+    for (s.source[span.start..span.end]) |c| {
+        if (c == '\n') count += 1;
+    }
+    return count;
+}
+
 pub fn extraData(s: *const Ast, extra: ExtraIndex, comptime T: type) T {
     const info = @typeInfo(T).@"struct";
     var result: T = undefined;
@@ -152,7 +173,12 @@ pub fn extraDataSlice(s: Ast, range: ExtraRange, comptime T: type) []const T {
     return @ptrCast(s.extra_data[@backingInt(range.start)..@backingInt(range.end)]);
 }
 
-pub fn parse(gpa: Allocator, source: [:0]const u8, writer: *std.Io.Writer) (Parser.Error || error{WriteFailed})!Ast {
+pub fn parse(
+    gpa: Allocator,
+    source: [:0]const u8,
+    writer: *std.Io.Writer,
+    diagnostics: *Diagnostics,
+) (Parser.Error || error{WriteFailed})!Ast {
     var tokens: TokenList = .empty;
 
     errdefer {
@@ -175,15 +201,11 @@ pub fn parse(gpa: Allocator, source: [:0]const u8, writer: *std.Io.Writer) (Pars
         .tok_i = 0,
         .extra_data = .empty,
         .scratch = .empty,
-        .diagnostics = .{
-            .diagnostics = .empty,
-            .gpa = gpa,
-        },
+        .diagnostics = diagnostics,
     };
 
     defer {
         parser.scratch.deinit(gpa);
-        parser.diagnostics.diagnostics.deinit(gpa);
     }
 
     const result = parser.parseRoot();
@@ -202,15 +224,19 @@ pub fn parse(gpa: Allocator, source: [:0]const u8, writer: *std.Io.Writer) (Pars
 
     result catch |err| {
         if (err != error.ParseError) return err;
-        try parser.diagnostics.write(&ast, writer);
-
+        try diagnostics.reportAll(&ast, writer);
         return err;
     };
 
     return ast;
 }
 
-pub fn genBytecode(s: *Ast, gpa: Allocator, writer: *std.Io.Writer) (BytecodeGen.Error || error{WriteFailed})!Vm {
+pub fn genBytecode(
+    s: *Ast,
+    gpa: Allocator,
+    writer: *std.Io.Writer,
+    diagnostics: *Diagnostics,
+) (BytecodeGen.Error || error{WriteFailed})!Vm {
     var constants_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
 
     var string_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
@@ -245,7 +271,7 @@ pub fn genBytecode(s: *Ast, gpa: Allocator, writer: *std.Io.Writer) (BytecodeGen
 
     const bytecode_ptr: [*]const u8 = @ptrCast(vm.constants[
         (bytecode_gen.symbol_table.get("main") orelse {
-            try writer.writeAll("No main function\n");
+            try diagnostics.add(.{ .level = .@"error", .data = .no_main_func, .span = .{ .start = 0, .end = 0 } });
             return error.GenError;
         }).value.constant
     ]);

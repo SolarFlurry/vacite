@@ -1,12 +1,110 @@
 const std = @import("std");
 
 const Ast = @import("Ast.zig");
-const Token = @import("Lexer.zig").Token;
+pub const Builder = @import("Diagnostics/Builder.zig");
+const Lexer = @import("Lexer.zig");
+const Token = Lexer.Token;
+const Span = Lexer.Span;
 
 const Diagnostics = @This();
 
 gpa: std.mem.Allocator,
 diagnostics: std.MultiArrayList(Diagnostic),
+
+pub fn init(gpa: std.mem.Allocator) Diagnostics {
+    return .{
+        .gpa = gpa,
+        .diagnostics = .empty,
+    };
+}
+
+pub fn deinit(s: *Diagnostics) void {
+    s.diagnostics.deinit(s.gpa);
+}
+
+pub fn build(s: *Diagnostics) Builder {
+    return .{
+        .diagnostics = s,
+    };
+}
+
+fn tokenString(ast: *const Ast, tok: Ast.TokenIndex) []const u8 {
+    if (ast.tokenTag(tok) == .eof) return "\x1b[3;34m(eof)\x1b[0;33m";
+    return ast.tokenString(tok);
+}
+
+pub const Diagnostic = struct {
+    level: Level,
+    span: Span,
+    data: Data,
+
+    pub const Level = enum(u8) {
+        @"error",
+        warning,
+        hint,
+    };
+
+    pub const Data = union(enum(u8)) {
+        unexpected_token: Ast.TokenIndex,
+        expected_token: struct {
+            unexpected: Token.Tag,
+            expected: Token.Tag,
+        },
+        expected_expr: Token.Tag,
+        expected_decl: Token.Tag,
+        expected_closing: Token.Tag,
+        no_main_func: void,
+    };
+
+    pub fn write(s: *const Diagnostic, ast: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        switch (s.level) {
+            .@"error" => try print(writer, "<rB>[Error]<0> ", .{}),
+            .warning => try print(writer, "<yB>[Warning]<0> ", .{}),
+            else => try writer.writeAll("[Diagnostic] "),
+        }
+
+        switch (s.data) {
+            .unexpected_token => |d| try print(writer, "Unexpected <y>'{s}'<0>\n", .{tokenString(ast, d)}),
+            .expected_token => |d| try print(writer, "Expected {s}, got {s}\n", .{ d.expected.describe(), d.unexpected.describe() }),
+            .expected_expr => |d| try print(writer, "Expected an expression, got {s}\n", .{d.describe()}),
+            .expected_decl => |d| try print(writer, "Expected a declaration, got {s}\n", .{d.describe()}),
+            .expected_closing => |d| try print(writer, "Expected matching closing {s}\n", .{d.describe()}),
+            .no_main_func => try print(writer, "No 'main' function\n", .{}),
+        }
+
+        const line_span = ast.getLine(s.span);
+        const line_num = ast.countLines(.{ .start = 0, .end = line_span.start }) + 1;
+        const column_num = line_span.start - line_span.start + 1;
+        const num_of_digits = std.math.log10_int(line_num) + 1;
+
+        for (0..num_of_digits + 2) |_| try writer.writeByte(' ');
+        try print(writer,
+            \\╭┄ {s}:{d}:{d}
+            \\ {1d} │ {s}<r>{s}<0>{s}
+            \\
+        , .{
+            "program",
+            line_num,
+            column_num,
+            ast.source[line_span.start..s.span.start],
+            ast.source[s.span.start..s.span.end],
+            ast.source[s.span.end..line_span.end],
+        });
+        for (0..num_of_digits + 2) |_| try writer.writeAll("─");
+        try writer.writeAll("╯\n");
+    }
+};
+
+pub fn add(s: *Diagnostics, diag: Diagnostic) std.mem.Allocator.Error!void {
+    try s.diagnostics.append(s.gpa, diag);
+}
+
+pub fn reportAll(s: *const Diagnostics, ast: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    for (0..s.diagnostics.len) |i| {
+        const diag = s.diagnostics.get(i);
+        try diag.write(ast, writer);
+    }
+}
 
 /// Zig's standard `print` but with ANSI formats!!
 /// Most of this code is copied from the `std.Io.Writer.print` function
@@ -193,59 +291,5 @@ fn print(w: *std.Io.Writer, comptime fmt: []const u8, args: anytype) std.Io.Writ
             1 => @compileError("unused argument in '" ++ fmt ++ "'"),
             else => @compileError(std.fmt.comptimePrint("{d}", .{missing_count}) ++ " unused arguments in '" ++ fmt ++ "'"),
         }
-    }
-}
-
-fn tokenString(ast: *const Ast, tok: Ast.TokenIndex) []const u8 {
-    if (ast.tokenTag(tok) == .eof) return "\x1b[3;34m(eof)\x1b[0;33m";
-    return ast.tokenString(tok);
-}
-
-pub const Diagnostic = struct {
-    level: Level,
-    data: Data,
-
-    pub const Level = enum(u8) {
-        @"error",
-        warning,
-        hint,
-    };
-
-    pub const Data = union(enum(u8)) {
-        unexpected_token: Ast.TokenIndex,
-        expected_token: struct {
-            unexpected: Ast.TokenIndex,
-            expected: Token.Tag,
-        },
-        expected_expr: Ast.TokenIndex,
-        expected_decl: Ast.TokenIndex,
-        expected_closing: Token.Tag,
-    };
-
-    pub fn write(s: *const Diagnostic, ast: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        switch (s.level) {
-            .@"error" => try print(writer, "<rB>[Error]<0> ", .{}),
-            .warning => try print(writer, "<yB>[Warning]<0> ", .{}),
-            else => try writer.writeAll("[Diagnostic] "),
-        }
-
-        switch (s.data) {
-            .unexpected_token => |d| try print(writer, "Unexpected <y>\"{s}\"<0>\n", .{tokenString(ast, d)}),
-            .expected_token => |d| try print(writer, "Unexpected <y>\"{s}\"<0>, expected {s}\n", .{ tokenString(ast, d.unexpected), d.expected.describe() }),
-            .expected_expr => |d| try print(writer, "Unexpected <y>\"{s}\"<0>, expected an expression\n", .{tokenString(ast, d)}),
-            .expected_decl => |d| try print(writer, "Unexpected <y>\"{s}\"<0>, expected a declaration\n", .{tokenString(ast, d)}),
-            .expected_closing => |d| try print(writer, "Expected matching closing {s}\n", .{d.describe()}),
-        }
-    }
-};
-
-pub fn add(s: *Diagnostics, diag: Diagnostic) std.mem.Allocator.Error!void {
-    try s.diagnostics.append(s.gpa, diag);
-}
-
-pub fn write(s: *const Diagnostics, ast: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-    for (0..s.diagnostics.len) |i| {
-        const diag = s.diagnostics.get(i);
-        try diag.write(ast, writer);
     }
 }

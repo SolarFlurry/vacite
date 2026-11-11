@@ -9,6 +9,7 @@ const ExtraRange = Ast.ExtraRange;
 const Diagnostics = @import("Diagnostics.zig");
 const Lexer = @import("Lexer.zig");
 const Token = Lexer.Token;
+const Span = Lexer.Span;
 
 const Parser = @This();
 
@@ -19,20 +20,21 @@ scratch: std.ArrayList(Node.Index),
 extra_data: std.ArrayList(u32),
 tok_i: TokenIndex,
 nodes: Ast.NodeList,
-diagnostics: Diagnostics,
+diagnostics: *Diagnostics,
 
 pub const Error = error{ParseError} || Allocator.Error;
 
-fn failError(p: *Parser, data: Diagnostics.Diagnostic.Data) Error {
+fn failError(p: *Parser, data: Diagnostics.Diagnostic.Data, span: Span) Error {
     @branchHint(.cold);
-    try p.resilientError(data);
+    try p.resilientError(data, span);
     return error.ParseError;
 }
 
 /// only returns error.ParseError if the current token is `.eof`
-fn resilientError(p: *Parser, data: Diagnostics.Diagnostic.Data) Error!void {
+fn resilientError(p: *Parser, data: Diagnostics.Diagnostic.Data, span: Span) Error!void {
     try p.diagnostics.add(.{
         .level = .@"error",
+        .span = span,
         .data = data,
     });
     if (p.tokenTag(p.tok_i) == .eof) return error.ParseError;
@@ -57,13 +59,20 @@ fn nextToken(p: *Parser) TokenIndex {
     return result;
 }
 
-fn tokenTag(p: *Parser, tok: TokenIndex) Token.Tag {
+fn tokenTag(p: *const Parser, tok: TokenIndex) Token.Tag {
     return p.tokens.get(tok).tag;
+}
+
+fn tokenSpan(p: *const Parser, tok: TokenIndex) Span {
+    return p.tokens.get(tok).loc;
 }
 
 fn expectToken(p: *Parser, expected: Lexer.Token.Tag) Error!TokenIndex {
     if (p.tokens.get(p.tok_i).tag != expected) {
-        return p.failError(.{ .expected_token = .{ .expected = expected, .unexpected = p.tok_i } });
+        return p.failError(.{ .expected_token = .{
+            .expected = expected,
+            .unexpected = p.tokenTag(p.tok_i),
+        } }, p.tokenSpan(p.tok_i));
     }
     return p.nextToken();
 }
@@ -137,7 +146,7 @@ fn parseContainerMembers(p: *Parser) Error!ExtraRange {
             .keyword_func,
             => try p.parseDecl(),
             .eof, .r_brace => break,
-            else => return p.failError(.{ .expected_decl = p.tok_i }),
+            else => return p.failError(.{ .expected_decl = p.tokenTag(p.tok_i) }, p.tokenSpan(p.tok_i)),
         };
 
         try p.scratch.append(p.gpa, node);
@@ -151,10 +160,13 @@ fn parseDecl(p: *Parser) Error!Node.Index {
     const is_fn = try p.parseFnProto();
 
     if (is_fn) |fn_proto| {
-        const block = try p.parseBlock() orelse return p.failError(.{ .expected_token = .{
-            .unexpected = p.tok_i,
-            .expected = .l_brace,
-        } });
+        const block = try p.parseBlock() orelse return p.failError(
+            .{ .expected_token = .{
+                .unexpected = p.tokenTag(p.tok_i),
+                .expected = .l_brace,
+            } },
+            p.tokenSpan(p.tok_i),
+        );
         return p.addNode(.{
             .main_token = start_token,
             .data = .{ .node_and_node = .{ fn_proto, block } },
@@ -195,14 +207,17 @@ fn parseFnProto(p: *Parser) Error!?Node.Index {
         _ = p.nextToken();
         _ = try p.expectToken(.r_paren);
     } else {
-        try p.resilientError(.{ .expected_token = .{
-            .unexpected = p.tok_i,
-            .expected = .l_paren,
-        } });
+        try p.resilientError(
+            .{ .expected_token = .{
+                .unexpected = p.tokenTag(p.tok_i),
+                .expected = .l_paren,
+            } },
+            p.tokenSpan(p.tok_i),
+        );
     }
 
     const return_type: Node.OptionalIndex = .fromOptional(try p.parseTypeExpr());
-    if (return_type == .none) try p.resilientError(.{ .expected_expr = p.tok_i });
+    if (return_type == .none) try p.resilientError(.{ .expected_expr = p.tokenTag(p.tok_i) }, p.tokenSpan(p.tok_i));
 
     return p.setNode(func_node_idx, .{
         .main_token = fn_token,
@@ -236,7 +251,7 @@ const oper_table = std.enums.directEnumArrayDefault(Token.Tag, OperInfo, .{ .pre
 });
 
 fn expectExpr(p: *Parser) Error!Node.Index {
-    return try p.parseExpr() orelse return p.failError(.{ .expected_expr = p.tok_i });
+    return try p.parseExpr() orelse return p.failError(.{ .expected_expr = p.tokenTag(p.tok_i) }, p.tokenSpan(p.tok_i));
 }
 
 fn parseExpr(p: *Parser) Error!?Node.Index {
@@ -370,17 +385,20 @@ fn parseBlock(p: *Parser) Error!?Node.Index {
             .keyword_let,
             .keyword_var,
             => try p.parseVarDecl(),
-            .eof => return p.failError(.{ .expected_closing = .r_brace }),
+            .eof => return p.failError(.{ .expected_closing = .r_brace }, p.tokenSpan(p.tok_i)),
             else => try p.expectExpr(),
         };
 
         try p.scratch.append(p.gpa, node);
 
         if (p.tokenTag(p.tok_i - 1) != .r_brace) {
-            _ = p.eatToken(.semicolon) orelse return p.failError(.{ .expected_token = .{
-                .unexpected = p.tok_i,
-                .expected = .semicolon,
-            } });
+            _ = p.eatToken(.semicolon) orelse return p.failError(
+                .{ .expected_token = .{
+                    .unexpected = p.tokenTag(p.tok_i),
+                    .expected = .semicolon,
+                } },
+                p.tokenSpan(p.tok_i),
+            );
         }
     }
 
