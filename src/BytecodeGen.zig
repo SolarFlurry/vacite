@@ -5,6 +5,9 @@ const Ast = @import("Ast.zig");
 const Node = Ast.Node;
 const TokenIndex = Ast.TokenIndex;
 pub const Symbol = @import("BytecodeGen/Symbol.zig");
+const Diagnostics = @import("Diagnostics.zig");
+const Diagnostic = Diagnostics.Diagnostic;
+const Span = @import("Lexer.zig").Span;
 const Vm = @import("Vm.zig");
 const Opcode = Vm.Opcode;
 const debug = @import("Vm/debug.zig");
@@ -28,6 +31,12 @@ allocated_regs: u8,
 stack_size: u8,
 last_emitted_op: Opcode = .call,
 ast: *const Ast,
+diagnositcs: *Diagnostics,
+
+fn failError(s: *Self, data: Diagnostic.Data, span: Span) Error {
+    try s.diagnositcs.add(.{ .level = .@"error", .data = data, .span = span });
+    return error.GenError;
+}
 
 fn addSymbol(s: *Self, name: []const u8, symbol: Symbol) Error!void {
     try s.symbol_table.put(name, symbol);
@@ -93,7 +102,12 @@ fn genDecl(s: *Self, decl: Node.Index) Error!void {
     const node = s.ast.getNode(decl);
     switch (node.kind) {
         .func_decl => return s.genFuncDecl(decl),
-        .var_decl => @panic("var decls at container scope not implemented yet"),
+        .var_decl => {
+            return s.failError(
+                .{ .direct_msg = "variable declarations at container scope not supported" },
+                s.ast.tokenSpan(node.main_token),
+            );
+        },
         else => unreachable,
     }
 }
