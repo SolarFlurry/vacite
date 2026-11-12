@@ -1,1 +1,2 @@
-let some-const = 1;
+func main() void {};
+let hello = 1;

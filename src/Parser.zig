@@ -22,6 +22,32 @@ tok_i: TokenIndex,
 nodes: Ast.NodeList,
 diagnostics: *Diagnostics,
 
+pub const TokenSet = struct {
+    const BackingInt = @Int(.unsigned, blk: {
+        const type_info = @typeInfo(Token.Tag).@"enum";
+        break :blk type_info.field_names.len;
+    });
+
+    set: BackingInt,
+
+    pub fn init(tags: []const Token.Tag) TokenSet {
+        var acc: TokenSet = .{ .set = 0 };
+        for (tags) |tag| {
+            acc.set |= 1 << @backingInt(tag);
+        }
+        return acc;
+    }
+
+    pub fn contains(set: TokenSet, needle: Token.Tag) bool {
+        return set.set & (@as(BackingInt, @intCast(1)) << @backingInt(needle)) > 0;
+    }
+};
+
+const tok_sets = struct {
+    pub const decl_start: TokenSet = .init(&.{ .keyword_let, .keyword_func });
+    pub const expr_start: TokenSet = .init(&.{ .identifier, .int_literal, .string_literal });
+};
+
 pub const Error = error{ParseError} || Allocator.Error;
 
 fn failError(p: *Parser, data: Diagnostics.Diagnostic.Data, span: Span) Error {
@@ -149,6 +175,8 @@ fn parseContainerMembers(p: *Parser) Error!ExtraRange {
             else => return p.failError(.{ .expected_decl = p.tokenTag(p.tok_i) }, p.tokenSpan(p.tok_i)),
         };
 
+        _ = try p.expectToken(.semicolon);
+
         try p.scratch.append(p.gpa, node);
     }
 
@@ -156,25 +184,13 @@ fn parseContainerMembers(p: *Parser) Error!ExtraRange {
 }
 
 fn parseDecl(p: *Parser) Error!Node.Index {
-    const start_token = p.tok_i;
-    const is_fn = try p.parseFnProto();
-
-    if (is_fn) |fn_proto| {
-        const block = try p.parseBlock() orelse return p.failError(
-            .{ .expected_token = .{
-                .unexpected = p.tokenTag(p.tok_i),
-                .expected = .l_brace,
-            } },
-            p.tokenSpan(p.tok_i),
-        );
-        return p.addNode(.{
-            .main_token = start_token,
-            .data = .{ .node_and_node = .{ fn_proto, block } },
-            .kind = .func_decl,
-        });
+    switch (p.tokenTag(p.tok_i)) {
+        .keyword_func => return p.parseFuncDecl(),
+        .keyword_let => return p.parseVarDecl(),
+        else => {
+            return p.failError(.{ .expected_decl = p.tokenTag(p.tok_i) }, p.tokenSpan(p.tok_i));
+        },
     }
-
-    return p.parseVarDecl();
 }
 
 fn parseVarDecl(p: *Parser) Error!Node.Index {
@@ -197,8 +213,8 @@ fn parseVarDecl(p: *Parser) Error!Node.Index {
     });
 }
 
-fn parseFnProto(p: *Parser) Error!?Node.Index {
-    const fn_token = p.eatToken(.keyword_func) orelse return null;
+fn parseFuncDecl(p: *Parser) Error!Node.Index {
+    const fn_token = p.eatToken(.keyword_func).?;
 
     const func_node_idx = try p.reserveNode();
 
@@ -207,7 +223,7 @@ fn parseFnProto(p: *Parser) Error!?Node.Index {
         _ = p.nextToken();
         _ = try p.expectToken(.r_paren);
     } else {
-        try p.resilientError(
+        return p.failError(
             .{ .expected_token = .{
                 .unexpected = p.tokenTag(p.tok_i),
                 .expected = .l_paren,
@@ -216,13 +232,28 @@ fn parseFnProto(p: *Parser) Error!?Node.Index {
         );
     }
 
-    const return_type: Node.OptionalIndex = .fromOptional(try p.parseTypeExpr());
-    if (return_type == .none) try p.resilientError(.{ .expected_expr = p.tokenTag(p.tok_i) }, p.tokenSpan(p.tok_i));
+    const return_type = try p.parseTypeExpr() orelse return p.failError(.{
+        .expected_expr = p.tokenTag(p.tok_i),
+    }, p.tokenSpan(p.tok_i));
+    const block = try p.parseBlock() orelse return p.failError(
+        .{ .expected_token = .{
+            .unexpected = p.tokenTag(p.tok_i),
+            .expected = .l_brace,
+        } },
+        p.tokenSpan(p.tok_i),
+    );
 
-    return p.setNode(func_node_idx, .{
+    return p.addNode(.{
         .main_token = fn_token,
-        .data = .{ .opt = return_type },
-        .kind = .func_proto,
+        .data = .{ .node_and_node = .{
+            p.setNode(func_node_idx, .{
+                .main_token = fn_token,
+                .data = .{ .node = return_type },
+                .kind = .func_proto,
+            }),
+            block,
+        } },
+        .kind = .func_decl,
     });
 }
 

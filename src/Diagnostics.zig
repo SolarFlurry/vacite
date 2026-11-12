@@ -5,6 +5,7 @@ pub const Builder = @import("Diagnostics/Builder.zig");
 const Lexer = @import("Lexer.zig");
 const Token = Lexer.Token;
 const Span = Lexer.Span;
+const print = @import("pretty_print.zig").print;
 
 const Diagnostics = @This();
 
@@ -38,6 +39,11 @@ pub const Diagnostic = struct {
     span: Span,
     data: Data,
 
+    pub const Label = struct {
+        message: []const u8,
+        span: Span,
+    };
+
     pub const Level = enum(u8) {
         @"error",
         warning,
@@ -45,6 +51,7 @@ pub const Diagnostic = struct {
     };
 
     pub const Data = union(enum(u8)) {
+        direct_msg: []const u8,
         unexpected_token: Ast.TokenIndex,
         expected_token: struct {
             unexpected: Token.Tag,
@@ -57,6 +64,9 @@ pub const Diagnostic = struct {
     };
 
     pub fn write(s: *const Diagnostic, ast: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        var labels_buffer: [4]Label = undefined;
+        var labels: std.ArrayList(Label) = .initBuffer(&labels_buffer);
+
         switch (s.level) {
             .@"error" => try print(writer, "<rB>[Error]<0> ", .{}),
             .warning => try print(writer, "<yB>[Warning]<0> ", .{}),
@@ -64,6 +74,7 @@ pub const Diagnostic = struct {
         }
 
         switch (s.data) {
+            .direct_msg => |d| try print(writer, "{s}\n", .{d}),
             .unexpected_token => |d| try print(writer, "Unexpected <y>'{s}'<0>\n", .{tokenString(ast, d)}),
             .expected_token => |d| try print(writer, "Expected {s}, got {s}\n", .{ d.expected.describe(), d.unexpected.describe() }),
             .expected_expr => |d| try print(writer, "Expected an expression, got {s}\n", .{d.describe()}),
@@ -72,26 +83,77 @@ pub const Diagnostic = struct {
             .no_main_func => try print(writer, "No 'main' function\n", .{}),
         }
 
-        const line_span = ast.getLine(s.span);
-        const line_num = ast.countLines(.{ .start = 0, .end = line_span.start }) + 1;
-        const column_num = line_span.start - line_span.start + 1;
-        const num_of_digits = std.math.log10_int(line_num) + 1;
+        if (labels.items.len == 0) {
+            labels.appendAssumeCapacity(.{
+                .span = s.span,
+                .message = "Error occurred here",
+            });
+        }
+
+        std.mem.sort(Label, labels.items, {}, struct {
+            pub fn inner(_: void, a: Label, b: Label) bool {
+                return a.span.start < b.span.start;
+            }
+        }.inner);
+
+        var largest_line: usize = 0;
+        for (labels.items) |label| {
+            const line_span = ast.getLine(label.span);
+            const line_num = std.mem.countScalar(u8, ast.source[0..line_span.start], '\n') + 1;
+            if (line_num > largest_line) largest_line = line_num;
+        }
+
+        const diag_line_span = ast.getLine(s.span);
+        const diag_line_num = std.mem.countScalar(u8, ast.source[0..diag_line_span.start], '\n') + 1;
+        const diag_column_num = s.span.start - diag_line_span.start + 1;
+        const num_of_digits = std.math.log10_int(largest_line) + 1;
 
         for (0..num_of_digits + 2) |_| try writer.writeByte(' ');
-        try print(writer,
-            \\╭┄ {s}:{d}:{d}
-            \\ {1d} │ {s}<r>{s}<0>{s}
-            \\
-        , .{
+
+        try print(writer, "╭┄ {s}:{d}:{d}\n", .{
             "program",
-            line_num,
-            column_num,
-            ast.source[line_span.start..s.span.start],
-            ast.source[s.span.start..s.span.end],
-            ast.source[s.span.end..line_span.end],
+            diag_line_num,
+            diag_column_num,
         });
-        for (0..num_of_digits + 2) |_| try writer.writeAll("─");
-        try writer.writeAll("╯\n");
+
+        for (labels.items, 0..) |label, i| {
+            const label_line_span = ast.getLine(s.span);
+            const label_line_num = std.mem.countScalar(u8, ast.source[0..label_line_span.start], '\n') + 1;
+            const label_col = label.span.start - label_line_span.start;
+            const label_line_digits = std.math.log10_int(label_line_num);
+            const label_span_len = label.span.end - label.span.start;
+
+            for (0..num_of_digits - label_line_digits) |_| try writer.writeByte(' ');
+            try print(writer, "{d} │ {s}<r>{s}<0>{s}\n", .{
+                label_line_num,
+                ast.source[label_line_span.start..label.span.start],
+                ast.source[label.span.start..label.span.end],
+                ast.source[label.span.end..label_line_span.end],
+            });
+
+            for (0..num_of_digits + 2) |_| try writer.writeByte(' ');
+            if (i == labels.items.len - 1) try writer.writeAll("╵") else try writer.writeAll("│");
+
+            for (0..label_col + 1) |_| try writer.writeByte(' ');
+
+            try print(writer, "<r>", .{});
+            const middle = label_span_len / 2;
+            if (label_span_len <= 1) {
+                try writer.writeAll("▲");
+            } else for (0..label.span.end - label.span.start) |j| {
+                if (j == middle) {
+                    try writer.writeAll("┬");
+                    continue;
+                }
+                try writer.writeAll("─");
+            }
+            try print(writer, "<0>\n", .{});
+
+            for (0..num_of_digits + 2) |_| try writer.writeByte(' ');
+            if (i == labels.items.len - 1) try writer.writeByte(' ') else try writer.writeAll(":");
+            for (0..label_col + middle + 1) |_| try writer.writeByte(' ');
+            try print(writer, "<r>╰┄ {s}<0>\n", .{label.message});
+        }
     }
 };
 
@@ -103,193 +165,5 @@ pub fn reportAll(s: *const Diagnostics, ast: *const Ast, writer: *std.Io.Writer)
     for (0..s.diagnostics.len) |i| {
         const diag = s.diagnostics.get(i);
         try diag.write(ast, writer);
-    }
-}
-
-/// Zig's standard `print` but with ANSI formats!!
-/// Most of this code is copied from the `std.Io.Writer.print` function
-/// graphics:
-///  <0> reset
-///  <B> bold
-///  <d> dim
-///  <i> italics
-///  <u> underline
-/// colors:
-///  <k> black
-///  <r> red
-///  <g> green
-///  <y> yellow
-///  <b> blue
-///  <m> magenta
-///  <c> cyan
-///  <w> white
-///
-///  You can chain them together like so:
-///   <Br> bold red
-///   <id> italic dim
-fn print(w: *std.Io.Writer, comptime fmt: []const u8, args: anytype) std.Io.Writer.Error!void {
-    const assert = std.debug.assert;
-
-    const ArgsType = @TypeOf(args);
-    const args_type_info = @typeInfo(ArgsType);
-    if (args_type_info != .@"struct") {
-        @compileError("expected tuple or struct argument, found " ++ @typeName(ArgsType));
-    }
-
-    const field_names = args_type_info.@"struct".field_names;
-    const max_format_args = @typeInfo(std.fmt.ArgSetType).int.bits;
-    if (field_names.len > max_format_args) {
-        @compileError("32 arguments max are supported per format call");
-    }
-
-    @setEvalBranchQuota(@as(comptime_int, fmt.len) * 1000); // NOTE: We're upcasting as 16-bit usize overflows.
-    comptime var arg_state: std.fmt.ArgState = .{ .args_len = field_names.len };
-    comptime var i = 0;
-    comptime var literal: []const u8 = "";
-    inline while (true) {
-        const start_index = i;
-
-        inline while (i < fmt.len) {
-            switch (fmt[i]) {
-                '{', '}', '<', '>' => break,
-                else => i += 1,
-            }
-        }
-
-        comptime var end_index = i;
-        comptime var unescape_brace = false;
-
-        // Handle {{, }}, << and >>, those are un-escaped as single braces
-        if (i + 1 < fmt.len and fmt[i + 1] == fmt[i]) {
-            unescape_brace = true;
-            // Make the first brace part of the literal...
-            end_index += 1;
-            // ...and skip both
-            i += 2;
-        }
-
-        literal = literal ++ fmt[start_index..end_index];
-
-        // We've already skipped the other brace, restart the loop
-        if (unescape_brace) continue;
-
-        // Write out the literal
-        if (literal.len != 0 and (i >= fmt.len or fmt[i] != '<')) {
-            try w.writeAll(literal);
-            literal = "";
-        }
-
-        if (i >= fmt.len) break;
-
-        const brace_kind = fmt[i];
-        const opposite_brace_kind = switch (brace_kind) {
-            '{' => '}',
-            '<' => '>',
-            else => '?',
-        };
-
-        if (fmt[i] == '}') {
-            @compileError("missing opening {");
-        }
-        if (fmt[i] == '>') {
-            @compileError("missing opening <");
-        }
-
-        // Get past the { or <
-        comptime assert(fmt[i] == '{' or fmt[i] == '<');
-        i += 1;
-
-        const fmt_begin = i;
-        // Find the closing brace
-        inline while (i < fmt.len and fmt[i] != opposite_brace_kind) i += 1;
-
-        const fmt_end = i;
-
-        if (i >= fmt.len) {
-            @compileError(std.fmt.comptimePrint("missing closing {c}", .{opposite_brace_kind}));
-        }
-
-        // Get past the } or >
-        comptime assert(fmt[i] == opposite_brace_kind);
-        i += 1;
-
-        if (brace_kind == '<') {
-            literal = literal ++ "\x1b[";
-            inline for (fmt[fmt_begin..fmt_end], 1..) |c, j| {
-                literal = literal ++ switch (c) {
-                    '0' => "0",
-                    'B' => "1",
-                    'd' => "2",
-                    'i' => "3",
-                    'u' => '4',
-                    'k' => "30",
-                    'r' => "31",
-                    'g' => "32",
-                    'y' => "33",
-                    'b' => "34",
-                    'm' => "35",
-                    'c' => "36",
-                    'w' => "37",
-                    else => @compileError(std.fmt.comptimePrint("unknown ANSI format '{c}'", .{c})),
-                } ++ if (j == fmt_end - fmt_begin) "" else ";";
-            }
-            literal = literal ++ "m";
-            continue;
-        }
-
-        const placeholder_array = fmt[fmt_begin..fmt_end].*;
-        const placeholder = comptime std.fmt.Placeholder.parse(&placeholder_array);
-        const arg_pos = comptime switch (placeholder.arg) {
-            .none => null,
-            .number => |pos| pos,
-            .named => |arg_name| std.meta.fieldIndex(ArgsType, arg_name) orelse
-                @compileError("no argument with name '" ++ arg_name ++ "'"),
-        };
-
-        const width = switch (placeholder.width) {
-            .none => null,
-            .number => |v| v,
-            .named => |arg_name| blk: {
-                const arg_i = comptime std.meta.fieldIndex(ArgsType, arg_name) orelse
-                    @compileError("no argument with name '" ++ arg_name ++ "'");
-                _ = comptime arg_state.nextArg(arg_i) orelse @compileError("too few arguments");
-                break :blk @field(args, arg_name);
-            },
-        };
-
-        const precision = switch (placeholder.precision) {
-            .none => null,
-            .number => |v| v,
-            .named => |arg_name| blk: {
-                const arg_i = comptime std.meta.fieldIndex(ArgsType, arg_name) orelse
-                    @compileError("no argument with name '" ++ arg_name ++ "'");
-                _ = comptime arg_state.nextArg(arg_i) orelse @compileError("too few arguments");
-                break :blk @field(args, arg_name);
-            },
-        };
-
-        const arg_to_print = comptime arg_state.nextArg(arg_pos) orelse
-            @compileError("too few arguments");
-
-        try w.printValue(
-            placeholder.specifier_arg,
-            .{
-                .fill = placeholder.fill,
-                .alignment = placeholder.alignment,
-                .width = width,
-                .precision = precision,
-            },
-            @field(args, field_names[arg_to_print]),
-            std.options.fmt_max_depth,
-        );
-    }
-
-    if (comptime arg_state.hasUnusedArgs()) {
-        const missing_count = arg_state.args_len - @popCount(arg_state.used_args);
-        switch (missing_count) {
-            0 => unreachable,
-            1 => @compileError("unused argument in '" ++ fmt ++ "'"),
-            else => @compileError(std.fmt.comptimePrint("{d}", .{missing_count}) ++ " unused arguments in '" ++ fmt ++ "'"),
-        }
     }
 }

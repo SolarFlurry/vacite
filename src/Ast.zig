@@ -7,6 +7,7 @@ const Lexer = @import("Lexer.zig");
 const Token = Lexer.Token;
 const Span = Lexer.Span;
 const Parser = @import("Parser.zig");
+const print = @import("pretty_print.zig").print;
 const Vm = @import("Vm.zig");
 const BytecodeArray = Vm.BytecodeArray;
 const debug = @import("Vm/debug.zig");
@@ -39,12 +40,12 @@ pub const Node = struct {
         root,
         /// main_token: `func`
         /// data: node_and_node
-        ///   0: func_proto
-        ///   1: block
+        ///   node: func_proto
+        ///   opt: block
         func_decl,
         /// main_token: `func`
         /// data: node_and_extra
-        ///   opt: the return type. It is `.none` only when a parsing error occurred
+        ///   node: the return type expr
         ///   extra: ExtraRange to param nodes
         func_proto,
         /// main_token: `let` or `var`
@@ -126,7 +127,11 @@ pub fn getNode(s: *const Ast, node: Node.Index) Node {
 }
 
 pub fn tokenTag(s: *const Ast, token: TokenIndex) Token.Tag {
-    return s.tokens.get(token).tag;
+    return s.tokens.items(.tag)[token];
+}
+
+pub fn tokenSpan(s: *const Ast, token: TokenIndex) Span {
+    return s.tokens.items(.loc)[token];
 }
 
 pub fn tokenString(s: *const Ast, token: TokenIndex) []const u8 {
@@ -236,7 +241,7 @@ pub fn genBytecode(
     gpa: Allocator,
     writer: *std.Io.Writer,
     diagnostics: *Diagnostics,
-) (BytecodeGen.Error || error{WriteFailed})!Vm {
+) BytecodeGen.Error!Vm {
     var constants_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
 
     var string_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
@@ -252,8 +257,13 @@ pub fn genBytecode(
         .constants_arena = constants_arena.allocator(),
         .symbol_table = .init(gpa),
         .ast = s,
+        .diagnositcs = diagnostics,
     };
     defer bytecode_gen.symbol_table.deinit();
+
+    errdefer {
+        bytecode_gen.constants.deinit(gpa);
+    }
 
     try bytecode_gen.genBytecode();
 
@@ -306,8 +316,9 @@ fn printTokens(s: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
     for (0..s.tokens.len) |i| {
         const token = s.tokens.get(i);
 
-        try writer.print(
-            "\x1b[36m.{s}\x1b[0m -> \x1b[33m'{s}'\x1b[0m\n",
+        try print(
+            writer,
+            "<d>.<0c>{s}<0> ->> <y>'{s}'<0>\n",
             .{ @tagName(token.tag), s.source[token.loc.start..token.loc.end] },
         );
     }
@@ -317,23 +328,23 @@ fn printNode(s: *const Ast, writer: *std.Io.Writer, node_i: Node.Index, indent: 
     const node = s.getNode(node_i);
 
     try writer.splatBytesAll("  ", indent);
-    try writer.print("\x1b[36m.{s}\x1b[0m", .{@tagName(node.kind)});
+    try print(writer, "<d>.<0c>{s}<0>", .{@tagName(node.kind)});
 
     switch (node.kind) {
         .root => unreachable,
         .infix_op => {
-            try writer.print(" \x1b[32m'{s}'\x1b[0m:\n", .{s.tokenString(node.main_token)});
+            try print(writer, " <y>'{s}'<0>:\n", .{s.tokenString(node.main_token)});
             try s.printNode(writer, node.data.node_and_node.@"0", indent + 1);
             try s.printNode(writer, node.data.node_and_node.@"1", indent + 1);
         },
         .int_literal => {
             const token = s.tokens.get(node.main_token);
             const str = s.source[token.loc.start..token.loc.end];
-            try writer.print(" \x1b[31m{s}\x1b[0m\n", .{str});
+            try print(writer, " <r>{s}<0>\n", .{str});
         },
         .var_decl => {
             const ident = s.tokens.get(node.main_token + 1);
-            try writer.print(" `{s}`:\n", .{s.source[ident.loc.start..ident.loc.end]});
+            try print(writer, " `{s}`:\n", .{s.source[ident.loc.start..ident.loc.end]});
             try s.printNode(writer, node.data.node_and_opt.@"0", indent + 1);
         },
         .@"return" => {
@@ -353,13 +364,13 @@ fn printNode(s: *const Ast, writer: *std.Io.Writer, node_i: Node.Index, indent: 
         },
         .func_decl => {
             const ident = s.tokens.get(node.main_token + 1);
-            try writer.print(" `{s}`:\n", .{s.source[ident.loc.start..ident.loc.end]});
+            try print(writer, " `{s}`:\n", .{s.source[ident.loc.start..ident.loc.end]});
             try s.printNode(writer, node.data.node_and_node.@"0", indent + 1);
             try s.printNode(writer, node.data.node_and_node.@"1", indent + 1);
         },
         .identifier => {
             const ident = s.tokens.get(node.main_token);
-            try writer.print(" `{s}`\n", .{s.source[ident.loc.start..ident.loc.end]});
+            try print(writer, " `{s}`\n", .{s.source[ident.loc.start..ident.loc.end]});
         },
         else => try writer.writeByte('\n'),
     }
