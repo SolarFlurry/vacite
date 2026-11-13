@@ -261,11 +261,10 @@ pub fn genBytecode(
     };
     defer bytecode_gen.symbol_table.deinit();
 
-    errdefer {
+    bytecode_gen.genBytecode() catch |err| {
         bytecode_gen.constants.deinit(gpa);
-    }
-
-    try bytecode_gen.genBytecode();
+        return err;
+    };
 
     var vm: Vm = .{
         .arena = constants_arena,

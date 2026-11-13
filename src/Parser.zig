@@ -175,7 +175,18 @@ fn parseContainerMembers(p: *Parser) Error!ExtraRange {
             else => return p.failError(.{ .expected_decl = p.tokenTag(p.tok_i) }, p.tokenSpan(p.tok_i)),
         };
 
-        _ = try p.expectToken(.semicolon);
+        _ = p.eatToken(.semicolon) orelse {
+            const tok_span = p.tokenSpan(p.tok_i - 1);
+            const err_span: Span = .{
+                .start = tok_span.end,
+                .end = tok_span.end,
+            };
+
+            return p.failError(.{ .expected_token = .{
+                .unexpected = p.tokenTag(p.tok_i),
+                .expected = .semicolon,
+            } }, err_span);
+        };
 
         try p.scratch.append(p.gpa, node);
     }
@@ -423,13 +434,18 @@ fn parseBlock(p: *Parser) Error!?Node.Index {
         try p.scratch.append(p.gpa, node);
 
         if (p.tokenTag(p.tok_i - 1) != .r_brace) {
-            _ = p.eatToken(.semicolon) orelse return p.failError(
-                .{ .expected_token = .{
+            _ = p.eatToken(.semicolon) orelse {
+                const tok_span = p.tokenSpan(p.tok_i - 1);
+                const err_span: Span = .{
+                    .start = tok_span.end,
+                    .end = tok_span.end,
+                };
+
+                return p.failError(.{ .expected_token = .{
                     .unexpected = p.tokenTag(p.tok_i),
                     .expected = .semicolon,
-                } },
-                p.tokenSpan(p.tok_i),
-            );
+                } }, err_span);
+            };
         }
     }
 

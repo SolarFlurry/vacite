@@ -108,9 +108,9 @@ pub const Diagnostic = struct {
         const diag_column_num = s.span.start - diag_line_span.start + 1;
         const num_of_digits = std.math.log10_int(largest_line) + 1;
 
-        for (0..num_of_digits + 2) |_| try writer.writeByte(' ');
+        for (0..num_of_digits + 2) |_| try writer.writeAll("─");
 
-        try print(writer, "╭┄ {s}:{d}:{d}\n", .{
+        try print(writer, "┬┄ {s}:{d}:{d}\n", .{
             "program",
             diag_line_num,
             diag_column_num,
@@ -131,13 +131,13 @@ pub const Diagnostic = struct {
                 ast.source[label.span.end..label_line_span.end],
             });
 
-            for (0..num_of_digits + 2) |_| try writer.writeByte(' ');
-            if (i == labels.items.len - 1) try writer.writeAll("╵") else try writer.writeAll("│");
+            try writer.splatByteAll(' ', num_of_digits + 2);
+            try writer.writeAll("│");
 
-            for (0..label_col + 1) |_| try writer.writeByte(' ');
+            try writer.splatByteAll(' ', label_col + 1);
 
             try print(writer, "<r>", .{});
-            const middle = label_span_len / 2;
+            const middle = (label_span_len) / 2;
             if (label_span_len <= 1) {
                 try writer.writeAll("▲");
             } else for (0..label.span.end - label.span.start) |j| {
@@ -149,9 +149,15 @@ pub const Diagnostic = struct {
             }
             try print(writer, "<0>\n", .{});
 
-            for (0..num_of_digits + 2) |_| try writer.writeByte(' ');
-            if (i == labels.items.len - 1) try writer.writeByte(' ') else try writer.writeAll(":");
-            for (0..label_col + middle + 1) |_| try writer.writeByte(' ');
+            if (i < labels.items.len - 1) {
+                try writer.splatByteAll(' ', num_of_digits + 2);
+                try writer.writeAll("│ ");
+            } else {
+                try writer.splatBytesAll("─", num_of_digits + 2);
+                try writer.writeAll("┴┄");
+            }
+
+            try writer.splatByteAll(' ', label_col + middle);
             try print(writer, "<r>╰┄ {s}<0>\n", .{label.message});
         }
     }

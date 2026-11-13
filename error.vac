@@ -1,2 +1,4 @@
-func main() void {};
+func main() void {
+    return hello;
+};
 let hello = 1;
