@@ -150,7 +150,12 @@ fn genExpr(s: *Self, expr: Node.Index) Error!void {
 
             try s.emitOp(.width64);
             try s.emitOp(.load_constant);
-            try s.emitVal((s.symbol_table.get(name) orelse return error.GenError).value.constant);
+            try s.emitVal((s.symbol_table.get(name) orelse {
+                return s.failError(
+                    .{ .direct_msg = "Use of undeclared identifier" },
+                    s.ast.tokenSpan(node.main_token),
+                );
+            }).value.constant);
         },
         .block => @panic("Blocks not supported yet"),
         .string_literal => @panic("Strings not implemented yet"),
