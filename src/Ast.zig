@@ -51,7 +51,7 @@ pub const Node = struct {
         /// main_token: `let` or `var`
         /// data: node_and_opt
         ///   node: the initial expression
-        ///   opt: and optional type
+        ///   opt: the optional type expression
         var_decl,
         identifier,
         int_literal,
@@ -255,11 +255,11 @@ pub fn genBytecode(
         .gpa = gpa,
         .constants = .empty,
         .constants_arena = constants_arena.allocator(),
-        .symbol_table = .init(gpa),
+        .symbol_table = .init(),
         .ast = s,
         .diagnositcs = diagnostics,
     };
-    defer bytecode_gen.symbol_table.deinit();
+    defer bytecode_gen.symbol_table.deinit(gpa);
 
     bytecode_gen.genBytecode() catch |err| {
         bytecode_gen.constants.deinit(gpa);
@@ -279,7 +279,7 @@ pub fn genBytecode(
     bytecode_gen.constants.deinit(gpa);
 
     const bytecode_ptr: [*]const u8 = @ptrCast(vm.constants[
-        (bytecode_gen.symbol_table.get("main") orelse {
+        (bytecode_gen.symbol_table.getSymbol("main") orelse {
             try diagnostics.add(.{ .level = .@"error", .data = .no_main_func, .span = .{ .start = 0, .end = 0 } });
             return error.GenError;
         }).value.constant

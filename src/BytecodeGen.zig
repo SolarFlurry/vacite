@@ -4,6 +4,7 @@ const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Node = Ast.Node;
 const TokenIndex = Ast.TokenIndex;
+pub const Scope = @import("BytecodeGen/scope.zig").Scope;
 pub const Symbol = @import("BytecodeGen/Symbol.zig");
 const Diagnostics = @import("Diagnostics.zig");
 const Diagnostic = Diagnostics.Diagnostic;
@@ -16,7 +17,30 @@ pub const Error = Allocator.Error || error{ GenError, WriteFailed };
 
 const Self = @This();
 
-pub const SymbolTable = std.StringHashMap(Symbol);
+pub const SymbolTable = struct {
+    scopes: std.MultiArrayList(Scope),
+
+    pub fn init() SymbolTable {
+        return .{
+            .scopes = .empty,
+        };
+    }
+
+    pub fn deinit(s: *SymbolTable, gpa: Allocator) void {
+        return s.scopes.deinit(gpa);
+    }
+
+    pub fn getSymbol(s: *const SymbolTable, ident: []const u8) ?Symbol {
+        for (0..s.scopes.len) |i| {
+            const item = s.scopes.get(i);
+            switch (item) {
+                .var_decl => |d| if (std.mem.eql(u8, d.ident, ident)) return d.symbol,
+            }
+        }
+
+        return null;
+    }
+};
 
 gpa: Allocator,
 /// the allocator used to store constant Bytecode and strings
@@ -38,8 +62,8 @@ fn failError(s: *Self, data: Diagnostic.Data, span: Span) Error {
     return error.GenError;
 }
 
-fn addSymbol(s: *Self, name: []const u8, symbol: Symbol) Error!void {
-    try s.symbol_table.put(name, symbol);
+pub fn pushScope(s: *Self, scope: Scope) Allocator.Error!void {
+    return s.symbol_table.scopes.append(s.gpa, scope);
 }
 
 pub fn emitOp(s: *Self, op: Opcode) Error!void {
@@ -118,11 +142,8 @@ fn genFuncDecl(s: *Self, decl: Node.Index) Error!void {
 
     const decl_node = s.ast.getNode(decl);
     const block = decl_node.data.node_and_node.@"1";
-    const block_node = s.ast.getNode(block);
 
-    for (s.ast.extraDataSlice(block_node.data.extra_range, Node.Index)) |node| {
-        try s.genExpr(node);
-    }
+    try s.genBlock(block);
 
     if (s.last_emitted_op != .func_return) {
         try s.emitOp(.func_return);
@@ -130,13 +151,54 @@ fn genFuncDecl(s: *Self, decl: Node.Index) Error!void {
 
     const constant = try s.createBytecode();
 
-    try s.addSymbol(
-        s.ast.tokenString(decl_node.main_token + 1),
-        .{ .value = .{ .constant = constant } },
-    );
+    try s.pushScope(.{ .var_decl = .{
+        .ident = s.ast.tokenString(decl_node.main_token + 1),
+        .symbol = .{
+            .value = .{ .constant = constant },
+            .type = .{ .kind = .int },
+        },
+        .is_var = false,
+    } });
 }
 
-// fn genVarDecl(s: *Self, decl: Node.Index) Error!void {}
+fn genVarDecl(s: *Self, decl: Node.Index) Error!void {
+    const node = s.ast.getNode(decl);
+
+    const var_reg = s.allocReg();
+    try s.genExpr(node.data.node_and_opt.@"0");
+
+    try s.emitOp(.store_to_reg);
+    try s.emitVal(var_reg);
+
+    try s.pushScope(.{
+        .var_decl = .{
+            .is_var = s.ast.tokenTag(node.main_token) == .keyword_var,
+            .ident = s.ast.tokenString(node.main_token + 1),
+            .symbol = .{
+                .type = .{ .kind = .int },
+                .value = .{ .reg = var_reg },
+            },
+        },
+    });
+}
+
+fn genBlock(s: *Self, block: Node.Index) Error!void {
+    const node = s.ast.getNode(block);
+
+    const start_regs = s.allocated_regs;
+
+    const stmts = s.ast.extraDataSlice(node.data.extra_range, Node.Index);
+
+    for (stmts) |stmt| {
+        const stmt_node = s.ast.getNode(stmt);
+        switch (stmt_node.kind) {
+            .var_decl => try s.genVarDecl(stmt),
+            else => try s.genExpr(stmt),
+        }
+    }
+
+    s.allocated_regs = start_regs;
+}
 
 fn genExpr(s: *Self, expr: Node.Index) Error!void {
     const node = s.ast.getNode(expr);
@@ -148,14 +210,24 @@ fn genExpr(s: *Self, expr: Node.Index) Error!void {
             const token = s.ast.tokens.get(node.main_token);
             const name = s.ast.source[token.loc.start..token.loc.end];
 
-            try s.emitOp(.width64);
-            try s.emitOp(.load_constant);
-            try s.emitVal((s.symbol_table.get(name) orelse {
+            const symbol = s.symbol_table.getSymbol(name) orelse {
                 return s.failError(
                     .{ .direct_msg = "Use of undeclared identifier" },
                     s.ast.tokenSpan(node.main_token),
                 );
-            }).value.constant);
+            };
+
+            switch (symbol.value) {
+                .reg => |reg| {
+                    try s.emitOp(.load_from_reg);
+                    try s.emitVal(reg);
+                },
+                .constant => |constant| {
+                    try s.emitOp(.width64);
+                    try s.emitOp(.load_constant);
+                    try s.emitVal(constant);
+                },
+            }
         },
         .block => @panic("Blocks not supported yet"),
         .string_literal => @panic("Strings not implemented yet"),

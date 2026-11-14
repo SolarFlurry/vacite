@@ -1,4 +1,4 @@
 func main() void {
-    return hello;
+    let foo = 5 + 9;
+    return 2 + foo-bar;
 };
-let hello = 1;
