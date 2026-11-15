@@ -1,5 +1,21 @@
 const std = @import("std");
 
+pub fn allocPrint(
+    a: std.mem.Allocator,
+    comptime fmt: []const u8,
+    args: anytype,
+) std.mem.Allocator.Error![]u8 {
+    var aw = try std.Io.Writer.Allocating.initCapacity(a, fmt.len);
+    defer aw.deinit();
+
+    const writer = &aw.writer;
+
+    print(writer, fmt, args) catch |err| switch (err) {
+        error.WriteFailed => return error.OutOfMemory,
+    };
+    return aw.toOwnedSlice();
+}
+
 /// Zig's standard `print` but with ANSI formats!!
 /// Most of this code is copied from the `std.Io.Writer.print` function
 /// graphics:

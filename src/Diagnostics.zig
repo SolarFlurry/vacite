@@ -1,19 +1,26 @@
 const std = @import("std");
 
 const Ast = @import("Ast.zig");
+const Node = Ast.Node;
+const TokenIndex = Ast.TokenIndex;
+const Symbol = @import("BytecodeGen/Symbol.zig");
+const Type = Symbol.Type;
 pub const Builder = @import("Diagnostics/Builder.zig");
 const Lexer = @import("Lexer.zig");
 const Token = Lexer.Token;
 const Span = Lexer.Span;
-const print = @import("pretty_print.zig").print;
+const pretty_print = @import("pretty_print.zig");
+const print = pretty_print.print;
+const printA = pretty_print.allocPrint;
 
 const Diagnostics = @This();
-
 gpa: std.mem.Allocator,
 diagnostics: std.MultiArrayList(Diagnostic),
+arena: std.heap.ArenaAllocator,
 
 pub fn init(gpa: std.mem.Allocator) Diagnostics {
     return .{
+        .arena = .init(std.heap.page_allocator),
         .gpa = gpa,
         .diagnostics = .empty,
     };
@@ -21,6 +28,7 @@ pub fn init(gpa: std.mem.Allocator) Diagnostics {
 
 pub fn deinit(s: *Diagnostics) void {
     s.diagnostics.deinit(s.gpa);
+    s.arena.deinit();
 }
 
 pub fn build(s: *Diagnostics) Builder {
@@ -59,11 +67,25 @@ pub const Diagnostic = struct {
         },
         expected_expr: Token.Tag,
         expected_decl: Token.Tag,
-        expected_closing: Token.Tag,
+        expected_closing: struct {
+            expected: Token.Tag,
+            prev: TokenIndex,
+        },
         no_main_func: void,
+        incompatible_op_types: struct {
+            lhs: Node.Index,
+            lhs_type: Symbol.Type,
+            rhs: Node.Index,
+            rhs_type: Symbol.Type,
+        },
     };
 
-    pub fn write(s: *const Diagnostic, ast: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    pub fn write(
+        s: *const Diagnostic,
+        arena: std.mem.Allocator,
+        ast: *const Ast,
+        writer: *std.Io.Writer,
+    ) error{ WriteFailed, OutOfMemory }!void {
         var labels_buffer: [4]Label = undefined;
         var labels: std.ArrayList(Label) = .initBuffer(&labels_buffer);
 
@@ -79,8 +101,35 @@ pub const Diagnostic = struct {
             .expected_token => |d| try print(writer, "Expected {s}, got {s}\n", .{ d.expected.describe(), d.unexpected.describe() }),
             .expected_expr => |d| try print(writer, "Expected an expression, got {s}\n", .{d.describe()}),
             .expected_decl => |d| try print(writer, "Expected a declaration, got {s}\n", .{d.describe()}),
-            .expected_closing => |d| try print(writer, "Expected matching closing {s}\n", .{d.describe()}),
+            .expected_closing => |d| {
+                try print(writer, "Expected matching closing {s}\n", .{d.expected.describe()});
+
+                labels.appendAssumeCapacity(.{
+                    .message = try arena.print("Expected {s} here", .{d.expected.describe()}),
+                    .span = s.span,
+                });
+
+                labels.appendAssumeCapacity(.{
+                    .message = try arena.print("Matching {s}", .{ast.tokenTag(d.prev).describe()}),
+                    .span = ast.tokenSpan(d.prev),
+                });
+            },
             .no_main_func => try print(writer, "No 'main' function\n", .{}),
+            .incompatible_op_types => |d| {
+                try print(writer, "Incompatible operand types\n", .{});
+
+                const lhs_span = ast.nodeSpan(d.lhs);
+                const rhs_span = ast.nodeSpan(d.rhs);
+                labels.appendAssumeCapacity(.{
+                    .message = try printA(arena, "LHS has type <r>{s}<0>", .{d.lhs_type.toString()}),
+                    .span = lhs_span,
+                });
+
+                labels.appendAssumeCapacity(.{
+                    .message = try printA(arena, "RHS has type <r>{s}<0>", .{d.rhs_type.toString()}),
+                    .span = rhs_span,
+                });
+            },
         }
 
         if (labels.items.len == 0) {
@@ -151,14 +200,14 @@ pub const Diagnostic = struct {
 
             if (i < labels.items.len - 1) {
                 try writer.splatByteAll(' ', num_of_digits + 2);
-                try writer.writeAll("│ ");
+                try writer.writeAll("┆ ");
             } else {
                 try writer.splatBytesAll("─", num_of_digits + 2);
                 try writer.writeAll("┴┄");
             }
 
             try writer.splatByteAll(' ', label_col + middle);
-            try print(writer, "<r>╰┄ {s}<0>\n", .{label.message});
+            try print(writer, "<r>╰┄<0> {s}\n", .{label.message});
         }
     }
 };
@@ -167,9 +216,9 @@ pub fn add(s: *Diagnostics, diag: Diagnostic) std.mem.Allocator.Error!void {
     try s.diagnostics.append(s.gpa, diag);
 }
 
-pub fn reportAll(s: *const Diagnostics, ast: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+pub fn reportAll(s: *Diagnostics, ast: *const Ast, writer: *std.Io.Writer) error{ WriteFailed, OutOfMemory }!void {
     for (0..s.diagnostics.len) |i| {
         const diag = s.diagnostics.get(i);
-        try diag.write(ast, writer);
+        try diag.write(s.arena.allocator(), ast, writer);
     }
 }

@@ -20,6 +20,14 @@ const Self = @This();
 pub const SymbolTable = struct {
     scopes: std.MultiArrayList(Scope),
 
+    pub const builtins: std.StaticStringMap(Symbol) = .initComptime(.{
+        .{ "int", Symbol.atomicType(.int) },
+        .{ "real", Symbol.atomicType(.real) },
+        .{ "bool", Symbol.atomicType(.bool) },
+        .{ "str", Symbol.atomicType(.str) },
+        .{ "type", Symbol.atomicType(.type) },
+    });
+
     pub fn init() SymbolTable {
         return .{
             .scopes = .empty,
@@ -31,6 +39,10 @@ pub const SymbolTable = struct {
     }
 
     pub fn getSymbol(s: *const SymbolTable, ident: []const u8) ?Symbol {
+        if (builtins.get(ident)) |symbol| {
+            return symbol;
+        }
+
         for (0..s.scopes.len) |i| {
             const item = s.scopes.get(i);
             switch (item) {
@@ -57,9 +69,8 @@ last_emitted_op: Opcode = .call,
 ast: *const Ast,
 diagnositcs: *Diagnostics,
 
-fn failError(s: *Self, data: Diagnostic.Data, span: Span) Error {
+fn emitError(s: *Self, data: Diagnostic.Data, span: Span) Error!void {
     try s.diagnositcs.add(.{ .level = .@"error", .data = data, .span = span });
-    return error.GenError;
 }
 
 pub fn pushScope(s: *Self, scope: Scope) Allocator.Error!void {
@@ -120,6 +131,8 @@ pub fn genBytecode(s: *Self) Error!void {
     for (s.ast.extraDataSlice(root_node.data.extra_range, Node.Index)) |node| {
         try s.genDecl(node);
     }
+
+    if (s.diagnositcs.diagnostics.len > 0) return error.GenError;
 }
 
 fn genDecl(s: *Self, decl: Node.Index) Error!void {
@@ -127,7 +140,7 @@ fn genDecl(s: *Self, decl: Node.Index) Error!void {
     switch (node.kind) {
         .func_decl => return s.genFuncDecl(decl),
         .var_decl => {
-            return s.failError(
+            return s.emitError(
                 .{ .direct_msg = "variable declarations at container scope not supported" },
                 s.ast.tokenSpan(node.main_token),
             );
@@ -143,7 +156,7 @@ fn genFuncDecl(s: *Self, decl: Node.Index) Error!void {
     const decl_node = s.ast.getNode(decl);
     const block = decl_node.data.node_and_node.@"1";
 
-    try s.genBlock(block);
+    _ = try s.genBlock(block);
 
     if (s.last_emitted_op != .func_return) {
         try s.emitOp(.func_return);
@@ -165,7 +178,8 @@ fn genVarDecl(s: *Self, decl: Node.Index) Error!void {
     const node = s.ast.getNode(decl);
 
     const var_reg = s.allocReg();
-    try s.genExpr(node.data.node_and_opt.@"0");
+
+    const initial_type = try s.genExpr(node.data.node_and_opt.@"0");
 
     try s.emitOp(.store_to_reg);
     try s.emitVal(var_reg);
@@ -175,14 +189,14 @@ fn genVarDecl(s: *Self, decl: Node.Index) Error!void {
             .is_var = s.ast.tokenTag(node.main_token) == .keyword_var,
             .ident = s.ast.tokenString(node.main_token + 1),
             .symbol = .{
-                .type = .{ .kind = .int },
+                .type = initial_type,
                 .value = .{ .reg = var_reg },
             },
         },
     });
 }
 
-fn genBlock(s: *Self, block: Node.Index) Error!void {
+fn genBlock(s: *Self, block: Node.Index) Error!Symbol.Type {
     const node = s.ast.getNode(block);
 
     const start_regs = s.allocated_regs;
@@ -193,16 +207,19 @@ fn genBlock(s: *Self, block: Node.Index) Error!void {
         const stmt_node = s.ast.getNode(stmt);
         switch (stmt_node.kind) {
             .var_decl => try s.genVarDecl(stmt),
-            else => try s.genExpr(stmt),
+            else => _ = try s.genExpr(stmt),
         }
     }
 
     s.allocated_regs = start_regs;
+
+    return .atomic(.void);
 }
 
-fn genExpr(s: *Self, expr: Node.Index) Error!void {
+/// returns the type of the expression
+fn genExpr(s: *Self, expr: Node.Index) Error!Symbol.Type {
     const node = s.ast.getNode(expr);
-    switch (node.kind) {
+    return switch (node.kind) {
         .infix_op => try s.genBinOp(node),
         .prefix_op => @panic("Prefix op not implemented yet"),
         .int_literal => try s.genInt(node),
@@ -211,10 +228,11 @@ fn genExpr(s: *Self, expr: Node.Index) Error!void {
             const name = s.ast.source[token.loc.start..token.loc.end];
 
             const symbol = s.symbol_table.getSymbol(name) orelse {
-                return s.failError(
+                try s.emitError(
                     .{ .direct_msg = "Use of undeclared identifier" },
                     s.ast.tokenSpan(node.main_token),
                 );
+                return .atomic(.poison);
             };
 
             switch (symbol.value) {
@@ -227,23 +245,28 @@ fn genExpr(s: *Self, expr: Node.Index) Error!void {
                     try s.emitOp(.load_constant);
                     try s.emitVal(constant);
                 },
+                .type => {},
             }
+            return symbol.type;
         },
-        .block => @panic("Blocks not supported yet"),
+        .block => try s.genBlock(node.data.node),
         .string_literal => @panic("Strings not implemented yet"),
         .func_call => {
-            try s.genExpr(node.data.node_and_extra.node);
+            const func_type = try s.genExpr(node.data.node_and_extra.node);
+            _ = func_type;
             try s.emitOp(.call);
+
+            return .atomic(.void);
         },
         .@"return" => try s.genReturn(node),
         .var_decl => unreachable,
         .func_decl => unreachable,
         .func_proto => unreachable,
         .root => unreachable,
-    }
+    };
 }
 
-fn genBinOp(s: *Self, node: Node) Error!void {
+fn genBinOp(s: *Self, node: Node) Error!Symbol.Type {
     const start_regs = s.allocated_regs;
 
     const op: Opcode = switch (s.ast.tokenTag(node.main_token)) {
@@ -254,40 +277,62 @@ fn genBinOp(s: *Self, node: Node) Error!void {
         else => unreachable,
     };
 
+    var lhs_type: Symbol.Type = undefined;
+    var rhs_type: Symbol.Type = undefined;
+
     const rhs = s.ast.getNode(node.data.node_and_node.@"1");
     if (rhs.kind == .int_literal) {
         // if rhs is literal we can use the imm version instead
         // subtracting 4 to non-imm int op results in imm [`@import("Vm.zig").Opcode`]
         const imm_op: Opcode = @fromBackingInt(@backingInt(op) - 4);
 
-        try s.genExpr(node.data.node_and_node.@"0");
+        lhs_type = try s.genExpr(node.data.node_and_node.@"0");
+        rhs_type = .atomic(.int);
 
         try s.emitOp(imm_op);
         try s.emitIntFromToken(rhs.main_token);
     } else {
-        try s.genExpr(node.data.node_and_node.@"1");
+        rhs_type = try s.genExpr(node.data.node_and_node.@"1");
         try s.emitOp(.store_to_reg);
         const rhs_reg = s.allocReg();
         try s.emitVal(rhs_reg);
 
-        try s.genExpr(node.data.node_and_node.@"0");
+        lhs_type = try s.genExpr(node.data.node_and_node.@"0");
 
         try s.emitOp(op);
         try s.emitVal(rhs_reg);
     }
 
     s.allocated_regs = start_regs;
+
+    if (!lhs_type.compatible(.atomic(.int)) or !rhs_type.compatible(.atomic(.int))) {
+        try s.emitError(
+            .{ .incompatible_op_types = .{
+                .lhs = node.data.node_and_node.@"0",
+                .lhs_type = lhs_type,
+                .rhs = node.data.node_and_node.@"1",
+                .rhs_type = rhs_type,
+            } },
+            s.ast.tokenSpan(node.main_token),
+        );
+    }
+
+    return .atomic(.poison);
 }
 
-fn genInt(s: *Self, node: Node) Error!void {
+fn genInt(s: *Self, node: Node) Error!Symbol.Type {
     try s.emitOp(.load_int_imm);
     try s.emitIntFromToken(node.main_token);
+
+    return .atomic(.int);
 }
 
-fn genReturn(s: *Self, node: Node) Error!void {
+fn genReturn(s: *Self, node: Node) Error!Symbol.Type {
     if (node.data.opt.toOptional()) |expr| {
-        try s.genExpr(expr);
+        _ = try s.genExpr(expr);
     }
 
     try s.emitOp(.func_return);
+
+    return .atomic(.noreturn);
 }

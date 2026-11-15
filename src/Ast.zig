@@ -139,6 +139,11 @@ pub fn tokenString(s: *const Ast, token: TokenIndex) []const u8 {
     return s.source[tok.loc.start..tok.loc.end];
 }
 
+pub fn nodeSpan(s: *const Ast, node: Node.Index) Span {
+    const data = s.getNode(node);
+    return s.tokenSpan(data.main_token);
+}
+
 /// returns the `Span` of the first line of an inner `Span`
 pub fn getLine(s: *const Ast, span: Span) Span {
     var line_start: usize = span.start;

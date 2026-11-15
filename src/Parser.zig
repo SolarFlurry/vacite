@@ -405,6 +405,19 @@ fn parsePrimaryTypeExpr(p: *Parser) Error!?Node.Index {
         .identifier => .identifier,
         .int_literal => .int_literal,
         .string_literal => .string_literal,
+        .l_paren => {
+            const l_paren_tok = p.nextToken();
+
+            const expr = try p.parseExpr() orelse return p.failError(
+                .{ .expected_expr = p.tokenTag(p.tok_i) },
+                p.tokenSpan(p.tok_i),
+            );
+            _ = p.eatToken(.r_paren) orelse return p.failError(.{ .expected_closing = .{
+                .expected = .r_paren,
+                .prev = l_paren_tok,
+            } }, p.tokenSpan(p.tok_i));
+            return expr;
+        },
         else => return null,
     };
 
@@ -427,7 +440,10 @@ fn parseBlock(p: *Parser) Error!?Node.Index {
             .keyword_let,
             .keyword_var,
             => try p.parseVarDecl(),
-            .eof => return p.failError(.{ .expected_closing = .r_brace }, p.tokenSpan(p.tok_i)),
+            .eof => return p.failError(.{ .expected_closing = .{
+                .expected = .r_brace,
+                .prev = start_token,
+            } }, p.tokenSpan(p.tok_i)),
             else => try p.expectExpr(),
         };
 
