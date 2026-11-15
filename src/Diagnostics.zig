@@ -166,7 +166,7 @@ pub const Diagnostic = struct {
         });
 
         for (labels.items, 0..) |label, i| {
-            const label_line_span = ast.getLine(s.span);
+            const label_line_span = ast.getLine(label.span);
             const label_line_num = std.mem.countScalar(u8, ast.source[0..label_line_span.start], '\n') + 1;
             const label_col = label.span.start - label_line_span.start;
             const label_line_digits = std.math.log10_int(label_line_num);
