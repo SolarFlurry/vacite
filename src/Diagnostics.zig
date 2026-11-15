@@ -308,8 +308,8 @@ pub const Diagnostic = struct {
                     try print(writer, "<d>│<0> ", .{});
                 } else {
                     try print(writer, "<d>", .{});
-                    try writer.splatBytesAll("─", num_of_digits + 2);
-                    try print(writer, "┴┄<0>", .{});
+                    try writer.splatBytesAll(" ", num_of_digits + 2);
+                    try print(writer, "│ <0>", .{});
                 }
 
                 // draw vertical drops for labels to the left (0..k), then `╰┄` for label k
@@ -347,5 +347,6 @@ pub fn reportAll(s: *Diagnostics, ast: *const Ast, writer: *std.Io.Writer) error
     for (0..s.diagnostics.len) |i| {
         const diag = s.diagnostics.get(i);
         try diag.write(s.arena.allocator(), ast, writer);
+        try writer.writeByte('\n');
     }
 }
