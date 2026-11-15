@@ -315,9 +315,11 @@ fn genBinOp(s: *Self, node: Node) Error!Symbol.Type {
             } },
             s.ast.tokenSpan(node.main_token),
         );
+
+        return .atomic(.poison);
     }
 
-    return .atomic(.poison);
+    return .common(lhs_type, rhs_type);
 }
 
 fn genInt(s: *Self, node: Node) Error!Symbol.Type {
