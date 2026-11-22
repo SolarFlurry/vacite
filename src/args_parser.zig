@@ -171,7 +171,7 @@ pub fn ParamsTree(comptime str: []const u8) type {
             comptime value_parsers: anytype,
             args: std.process.Args,
             arena: std.mem.Allocator,
-        ) (std.process.Args.ToSliceError || ArgsError)!tree.ParseResult(value_parsers) {
+        ) !tree.ParseResult(value_parsers) {
             const arg_slice = try args.toSlice(arena);
             if (arg_slice.len == 1) return error.NotEnoughArgs;
 
@@ -184,7 +184,7 @@ pub fn ParamsTree(comptime str: []const u8) type {
             comptime cmd: Subcommand,
             args: []const []const u8,
             start: usize,
-        ) ArgsError!tree.SubcommandResult(cmd, value_parsers) {
+        ) !tree.SubcommandResult(cmd, value_parsers) {
             var res: tree.SubcommandResult(cmd, value_parsers) = .{};
 
             var i = start;
@@ -257,36 +257,75 @@ pub fn ParamsTree(comptime str: []const u8) type {
             return res;
         }
 
+        fn optionHelpString(comptime tree: *const @This(), option: Option) []const u8 {
+            var result: []const u8 = "  ";
+            if (option.short) |short| {
+                result = result ++ "\x1b[33m-" ++ .{short} ++ "\x1b[0m, ";
+            } else {
+                result = result ++ "    ";
+            }
+            result = result ++ "\x1b[33m--" ++ option.long ++ "\x1b[0m";
+            if (option.positional) |positional| {
+                result = result ++ " \x1b[32m<" ++ tree.positionals[positional].type ++ ">\x1b[0m";
+            }
+
+            result = result ++ "    " ++ option.help ++ "\n";
+        }
+
+        fn optionStringLength(comptime tree: *const @This(), option: Option) usize {
+            var len: usize = option.long.len;
+            if (option.positional) |positional| {
+                len += 3 + tree.positionals[positional].type.len;
+            }
+
+            return len;
+        }
+
         pub fn helpString(comptime tree: *const @This(), comptime bin_name: []const u8) []const u8 {
             if (!@inComptime()) @compileError("`helpString` must be called at comptime");
 
             const root = tree.root;
-            var help: []const u8 = "Usage: \x1b[36m" ++ bin_name ++ "\x1b[0m";
+
+            const max_option_length = blk: {
+                var result: usize = 0;
+                for (tree.options[root.options.start..root.options.end]) |option| {
+                    result = @max(result, tree.optionStringLength(option));
+                }
+                break :blk result;
+            };
+
+            var help: []const u8 = "\x1b[1mUsage:\x1b[0m \x1b[36m" ++ bin_name ++ "\x1b[0m";
 
             for (tree.positionals[root.positionals.start..root.positionals.end]) |positional| {
-                help = help ++ " <" ++ positional.type ++ ">";
+                help = help ++ " \x1b[32m<" ++ positional.type ++ ">\x1b[0m";
             }
 
-            help = help ++ "\n" ++ root.help ++ "\n\nOptions:\n\n";
+            help = help ++ "\n" ++ root.help ++ "\n\n\x1b[1mOptions:\x1b[0m\n\n";
 
             for (tree.options[root.options.start..root.options.end]) |option| {
-                help = help ++ "  --" ++ option.long;
+                help = help ++ "  ";
                 if (option.short) |short| {
-                    help = help ++ ", -" ++ .{short};
+                    help = help ++ "\x1b[33m-" ++ .{short} ++ "\x1b[0m, ";
+                } else {
+                    help = help ++ "    ";
                 }
+                help = help ++ "\x1b[33m--" ++ option.long ++ "\x1b[0m";
                 if (option.positional) |positional| {
-                    help = help ++ " <" ++ tree.positionals[positional].type ++ ">";
+                    help = help ++ " \x1b[32m<" ++ tree.positionals[positional].type ++ ">\x1b[0m";
                 }
 
-                help = help ++ "    " ++ option.help ++ "\n";
+                const length = tree.optionStringLength(option);
+                const spaces: *const [max_option_length - length + 4]u8 = &@splat(' ');
+
+                help = help ++ spaces ++ option.help ++ "\n";
             }
 
-            help = help ++ "\nSubcommands:\n\n";
+            help = help ++ "\n\x1b[1mSubcommands:\x1b[0m\n\n";
 
             for (tree.subcommands[root.branches.start..root.branches.end]) |subcommand| {
                 help = help ++ "  \x1b[36m" ++ subcommand.name ++ "\x1b[0m";
                 for (tree.positionals[subcommand.positionals.start..subcommand.positionals.end]) |positional| {
-                    help = help ++ " <" ++ positional.type ++ ">";
+                    help = help ++ " \x1b[32m<" ++ positional.type ++ ">\x1b[0m";
                 }
 
                 help = help ++ "    " ++ subcommand.help ++ "\n";

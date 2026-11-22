@@ -8,6 +8,26 @@ const Vm = @import("Vm.zig");
 const Opcode = Vm.Opcode;
 const debug = @import("Vm/debug.zig");
 
+const DebugFlags = packed struct {
+    tokens: bool = false,
+    ast: bool = false,
+    bytecode: bool = false,
+    _: u5 = undefined,
+};
+
+fn parseDbg(in: []const u8) error{UnknownDebugFlag}!DebugFlags {
+    var flags: DebugFlags = .{};
+    for (in) |c| {
+        switch (c) {
+            't' => flags.tokens = true,
+            'a' => flags.ast = true,
+            'b' => flags.bytecode = true,
+            else => return error.UnknownDebugFlag,
+        }
+    }
+    return flags;
+}
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
 
@@ -20,7 +40,6 @@ pub fn main(init: std.process.Init) !void {
         \\<file>          : Runs the Vacite program in <file>
         \\--help -h       : Print help and exit
         \\--version -v    : Print version and exit
-        \\--debug <dbg>   : Output debug information
         \\run <file>      : Runs the Vacite program in <file>
         \\ --debug <dbg>  : Output debug information
         \\ --help -h 
@@ -33,13 +52,14 @@ pub fn main(init: std.process.Init) !void {
 
     const res = tree.parse(.{
         .file = args_parser.parsers.string,
-        .dbg = args_parser.parsers.string,
+        .dbg = parseDbg,
     }, init.minimal.args, arena) catch |err| {
         switch (err) {
             error.LoneSingleDash => try print(writer, "<r>[Error]<0> Lone single dash\n", .{}),
             error.SingleDashLong => try print(writer, "<r>[Error]<0> Single dash on a long form option\n", .{}),
             error.UnexpectedArg => try print(writer, "<r>[Error]<0> Unexpected arg\n", .{}),
             error.UnknownOption => try print(writer, "<r>[Error]<0> Unknown option\n", .{}),
+            error.UnknownDebugFlag => try print(writer, "<r>[Error]<0> Unknown debug flag, the accepted values are 't', 'a' and 'b'\n", .{}),
             error.NotEnoughArgs => try writer.writeAll(helpString),
             else => return err,
         }
@@ -52,7 +72,14 @@ pub fn main(init: std.process.Init) !void {
                 try writer.writeAll("Imagine the help for the `run` command here\n");
                 return;
             }
-            try run(arena, init.gpa, init.io, writer, run_cmd.pos_args.@"0");
+            try run(
+                arena,
+                init.gpa,
+                init.io,
+                writer,
+                run_cmd.pos_args.@"0",
+                run_cmd.opts.debug orelse .{},
+            );
         },
         .fmt => {
             try print(writer, "<r>[Error]<0> fmt command not implemented yet\n", .{});
@@ -66,7 +93,7 @@ pub fn main(init: std.process.Init) !void {
             // both the case of no options and `help` should print help
             try writer.writeAll(helpString);
         },
-        .pos_args => |pos_args| try run(arena, init.gpa, init.io, writer, pos_args.@"0"),
+        .pos_args => |pos_args| try run(arena, init.gpa, init.io, writer, pos_args.@"0", .{}),
     }
 }
 
@@ -76,6 +103,7 @@ fn run(
     io: std.Io,
     writer: *std.Io.Writer,
     file_path: []const u8,
+    debug_flags: DebugFlags,
 ) !void {
     const file = std.Io.Dir.cwd().openFile(
         io,
@@ -101,7 +129,9 @@ fn run(
     };
     defer ast.deinit(gpa);
 
-    try writer.print("{f}", .{ast});
+    if (debug_flags.tokens) try ast.printTokens(writer);
+    if (debug_flags.ast) try writer.print("{f}", .{ast});
+    // TODO: use `debug_flags.bytecode` to control the output of bytecode
 
     var vm = ast.genBytecode(gpa, writer, &diagnostics) catch |err| {
         if (err != error.GenError) return err;
