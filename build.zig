@@ -4,10 +4,13 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const strip = b.option(bool, "strip", "Strip the resultant Vacite binary");
+
     const vacite_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        .strip = strip orelse false,
     });
 
     const vacite_exe = b.addExecutable(.{
@@ -24,6 +27,12 @@ pub fn build(b: *std.Build) !void {
         .root_module = vacite_mod,
     });
 
+    const vacite_exe_tests_exe = b.addTest(.{
+        .name = "vacite",
+        .root_module = vacite_mod,
+    });
+    const vacite_exe_test = b.addRunArtifact(vacite_exe_tests_exe);
+
     vacite_exe_run.addPassthruArgs();
 
     const run_step = b.step("run", "Run the resulting binary");
@@ -31,4 +40,7 @@ pub fn build(b: *std.Build) !void {
 
     const check_step = b.step("check", "Check step for ZLS");
     check_step.dependOn(&vacite_exe_check.step);
+
+    const test_step = b.step("test", "Run all tests");
+    test_step.dependOn(&vacite_exe_test.step);
 }

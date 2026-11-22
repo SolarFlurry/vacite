@@ -85,9 +85,10 @@ pub fn ParamsTree(comptime str: []const u8) type {
                 var positionals: [cmd.positionals.end - cmd.positionals.start]type = undefined;
                 for (tree.positionals[cmd.positionals.start..cmd.positionals.end], 0..) |positional, i| {
                     const parser = @field(value_parsers, positional.type);
-                    const ReturnType = @TypeOf(try parser(undefined));
+                    const ReturnType = @typeInfo(@TypeOf(parser)).@"fn".return_type.?;
+                    const PosType = @typeInfo(ReturnType).error_union.payload;
 
-                    positionals[i] = ReturnType;
+                    positionals[i] = PosType;
                 }
 
                 break :blk @Tuple(&positionals);
@@ -106,7 +107,8 @@ pub fn ParamsTree(comptime str: []const u8) type {
                     if (option.positional) |pos_idx| {
                         const positional = tree.positionals[pos_idx];
                         const parser = @field(value_parsers, positional.type);
-                        const OptionType = ?@TypeOf(try parser(undefined));
+                        const ReturnType = @typeInfo(@TypeOf(parser)).@"fn".return_type.?;
+                        const OptionType = ?@typeInfo(ReturnType).error_union.payload;
 
                         option_types[i] = OptionType;
                         option_attrs[i] = .{ .default_value_ptr = &@as(OptionType, null) };
@@ -224,6 +226,7 @@ pub fn ParamsTree(comptime str: []const u8) type {
 
                 inline for (tree.subcommands[cmd.branches.start..cmd.branches.end]) |subcmd| {
                     if (std.mem.eql(u8, arg, subcmd.name)) {
+                        i += 1;
                         res.cmd = @unionInit(
                             @TypeOf(res.cmd),
                             subcmd.name,

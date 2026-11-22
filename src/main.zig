@@ -36,10 +36,10 @@ pub fn main(init: std.process.Init) !void {
         .dbg = args_parser.parsers.string,
     }, init.minimal.args, arena) catch |err| {
         switch (err) {
-            error.LoneSingleDash => try writer.writeAll("[Error] Lone single dash\n"),
-            error.SingleDashLong => try writer.writeAll("[Error] Single dash on a long form option\n"),
-            error.UnexpectedArg => try writer.writeAll("[Error] Unexpected arg\n"),
-            error.UnknownOption => try writer.writeAll("[Error] Unknown option\n"),
+            error.LoneSingleDash => try print(writer, "<r>[Error]<0> Lone single dash\n", .{}),
+            error.SingleDashLong => try print(writer, "<r>[Error]<0> Single dash on a long form option\n", .{}),
+            error.UnexpectedArg => try print(writer, "<r>[Error]<0> Unexpected arg\n", .{}),
+            error.UnknownOption => try print(writer, "<r>[Error]<0> Unknown option\n", .{}),
             error.NotEnoughArgs => try writer.writeAll(helpString),
             else => return err,
         }
@@ -55,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
             try run(arena, init.gpa, init.io, writer, run_cmd.pos_args.@"0");
         },
         .fmt => {
-            try writer.writeAll("[Error] fmt command not implemented yet\n");
+            try print(writer, "<r>[Error]<0> fmt command not implemented yet\n", .{});
             return;
         },
         .none => {
@@ -82,9 +82,10 @@ fn run(
         file_path,
         .{ .mode = .read_only },
     ) catch {
-        try writer.print("[Error] Failed to open file '{s}'\n", .{file_path});
+        try print(writer, "<r>[Error]<0> Failed to open file '<y>{s}<0>'\n", .{file_path});
         return;
     };
+    defer file.close(io);
 
     const stat = try file.stat(io);
     const file_contents = try arena.allocSentinel(u8, stat.size, 0);
