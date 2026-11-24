@@ -249,22 +249,21 @@ pub fn genBytecode(
 ) BytecodeGen.Error!Vm {
     var constants_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
 
-    var string_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
-    defer string_arena.deinit();
+    var scopes_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer scopes_arena.deinit();
 
-    var bytecode_gen: BytecodeGen = .{
-        .writer = writer,
-        .stack_size = 0,
-        .allocated_regs = 0,
-        .bytecode = .empty,
-        .gpa = gpa,
-        .constants = .empty,
-        .constants_arena = constants_arena.allocator(),
-        .symbol_table = .init(),
-        .ast = s,
-        .diagnositcs = diagnostics,
-    };
-    defer bytecode_gen.symbol_table.deinit(gpa);
+    var bytecode_gen: BytecodeGen = .init(
+        s,
+        gpa,
+        constants_arena.allocator(),
+        scopes_arena.allocator(),
+        writer,
+        diagnostics,
+    );
+
+    defer {
+        bytecode_gen.types.deinit(gpa);
+    }
 
     bytecode_gen.genBytecode() catch |err| {
         bytecode_gen.constants.deinit(gpa);
@@ -284,10 +283,10 @@ pub fn genBytecode(
     bytecode_gen.constants.deinit(gpa);
 
     const bytecode_ptr: [*]const u8 = @ptrCast(vm.constants[
-        (bytecode_gen.symbol_table.getSymbol("main") orelse {
+        bytecode_gen.entry_fn orelse {
             try diagnostics.add(.{ .level = .@"error", .data = .no_main_func, .span = .{ .start = 0, .end = 0 } });
             return error.GenError;
-        }).value.constant
+        }
     ]);
 
     const bytecode = Vm.getBytecodeArrayFromPtr(bytecode_ptr);
@@ -304,8 +303,6 @@ pub fn deinit(s: *Ast, gpa: std.mem.Allocator) void {
 }
 
 pub fn format(s: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-    try s.printTokens(writer);
-
     try writer.writeByte('\n');
 
     const root_node = s.nodes.get(0);
@@ -316,7 +313,7 @@ pub fn format(s: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
     }
 }
 
-fn printTokens(s: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+pub fn printTokens(s: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
     for (0..s.tokens.len) |i| {
         const token = s.tokens.get(i);
 

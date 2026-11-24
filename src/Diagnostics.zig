@@ -74,23 +74,23 @@ pub const Diagnostic = struct {
         no_main_func: void,
         incompatible_op_types: struct {
             lhs: Node.Index,
-            lhs_type: Symbol.Type,
+            lhs_type: Type.Ref,
             rhs: Node.Index,
-            rhs_type: Symbol.Type,
+            rhs_type: Type.Ref,
         },
         incompatible_return_types: struct {
-            expected: Symbol.Type,
+            expected: Type.Ref,
             return_type_node: Node.Index,
-            found: Symbol.Type,
+            found: Type.Ref,
         },
         expected_type: struct {
-            expected: Symbol.Type,
-            found: Symbol.Type,
+            expected: Type.Ref,
+            found: Type.Ref,
         },
         expected_type_because: struct {
-            expected: Symbol.Type,
+            expected: Type.Ref,
             because: Node.Index,
-            found: Symbol.Type,
+            found: Type.Ref,
         },
     };
 
@@ -233,10 +233,10 @@ pub const Diagnostic = struct {
         //    │                           ╰┄ This doc comment is evil
         // 20 │ func fib(n int) int {
         //    │                 ─┬─
-        // .. ┆                  ╰┄ Return type is int
+        //    ┆                  ╰┄ Return type is int
         // 27 │ return "42";
         //    │        ─┬──
-        //────┴┄        ╰┄ Return value has type str
+        //    │         ╰┄ Return value has type str
 
         var i: usize = 0;
         while (i < labels.items.len) {
@@ -297,19 +297,29 @@ pub const Diagnostic = struct {
             }
             try print(writer, "<0>\n", .{});
 
+            const is_next_line_consecutive = blk: {
+                if (is_last_group) break :blk true;
+
+                const next_label_span = labels.items[group_end].span;
+                const next_line = group_line + std.mem.countScalar(
+                    u8,
+                    ast.source[group_line_span.end..next_label_span.start],
+                    '\n',
+                );
+
+                break :blk (group_line + 1 == next_line);
+            };
+
             // print the label tails
             var k = group.len;
             while (k > 0) {
                 k -= 1;
-                const is_last_row = is_last_group and (k == 0);
 
-                if (!is_last_row) {
-                    try writer.splatByteAll(' ', num_of_digits + 2);
+                try writer.splatByteAll(' ', num_of_digits + 2);
+                if (is_next_line_consecutive) {
                     try print(writer, "<d>│<0> ", .{});
                 } else {
-                    try print(writer, "<d>", .{});
-                    try writer.splatBytesAll(" ", num_of_digits + 2);
-                    try print(writer, "│ <0>", .{});
+                    try print(writer, "<d>┆<0> ", .{});
                 }
 
                 // draw vertical drops for labels to the left (0..k), then `╰┄` for label k

@@ -1,11 +1,12 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 
 const Ast = @import("Ast.zig");
 const Node = Ast.Node;
 const TokenIndex = Ast.TokenIndex;
-pub const Scope = @import("BytecodeGen/scope.zig").Scope;
 pub const Symbol = @import("BytecodeGen/Symbol.zig");
+const Type = Symbol.Type;
 const Diagnostics = @import("Diagnostics.zig");
 const Diagnostic = Diagnostics.Diagnostic;
 const Span = @import("Lexer.zig").Span;
@@ -17,8 +18,17 @@ pub const Error = Allocator.Error || error{ GenError, WriteFailed };
 
 const Self = @This();
 
-pub const SymbolTable = struct {
-    scopes: std.MultiArrayList(Scope),
+pub const Scope = struct {
+    kind: Kind,
+
+    pub const Kind = enum {
+        /// the Root scope
+        root,
+        /// a LocalVar scope
+        local_var,
+        /// a Container
+        container,
+    };
 
     pub const builtins: std.StaticStringMap(Symbol) = .initComptime(.{
         .{ "int", Symbol.atomicType(.int) },
@@ -26,28 +36,79 @@ pub const SymbolTable = struct {
         .{ "bool", Symbol.atomicType(.bool) },
         .{ "str", Symbol.atomicType(.str) },
         .{ "type", Symbol.atomicType(.type) },
+        .{ "void", Symbol.atomicType(.void) },
     });
 
-    pub fn init() SymbolTable {
-        return .{
-            .scopes = .empty,
+    /// used for local var declarations as well as
+    /// function parameters
+    pub const LocalVar = struct {
+        pub const base_kind: Kind = .local_var;
+
+        base: Scope = .{ .kind = .local_var },
+        parent: *Scope,
+        /// if it was initialised with `var`
+        is_var: bool,
+        /// the identifier string
+        ident: []const u8,
+        symbol: Symbol,
+    };
+
+    pub const Container = struct {
+        pub const base_kind: Kind = .container;
+
+        base: Scope = .{ .kind = .container },
+        parent: *Scope,
+        /// an array of identifiers mapping to symbols
+        decls: std.MultiArrayList(struct { []const u8, Symbol }),
+    };
+
+    pub const Root = struct {
+        pub const base_kind: Kind = .root;
+        base: Scope = .{ .kind = .root },
+    };
+
+    fn cast(base: *Scope, comptime T: type) *T {
+        assert(base.kind == T.base_kind);
+
+        return @alignCast(@fieldParentPtr("base", base));
+    }
+
+    pub fn parent(base: *Scope) ?*Scope {
+        return switch (base.kind) {
+            .root => null,
+            .local_var => base.cast(LocalVar).parent,
+            .container => base.cast(Container).parent,
         };
     }
 
-    pub fn deinit(s: *SymbolTable, gpa: Allocator) void {
-        return s.scopes.deinit(gpa);
-    }
+    pub fn getSymbol(base: *Scope, ident: []const u8) ?Symbol {
+        var maybe_scope: ?*Scope = base;
 
-    pub fn getSymbol(s: *const SymbolTable, ident: []const u8) ?Symbol {
         if (builtins.get(ident)) |symbol| {
             return symbol;
         }
 
-        for (0..s.scopes.len) |i| {
-            const item = s.scopes.get(i);
-            switch (item) {
-                .var_decl => |d| if (std.mem.eql(u8, d.ident, ident)) return d.symbol,
+        while (maybe_scope) |scope| {
+            switch (scope.kind) {
+                .root => return null,
+                .local_var => {
+                    const local_var = scope.cast(LocalVar);
+                    if (std.mem.eql(u8, ident, local_var.ident)) {
+                        return local_var.symbol;
+                    }
+                },
+                .container => {
+                    const container = scope.cast(Container);
+                    for (0..container.decls.len) |i| {
+                        const item_ident = container.decls.items(.@"0")[i];
+                        if (std.mem.eql(u8, ident, item_ident)) {
+                            return container.decls.items(.@"1")[i];
+                        }
+                    }
+                },
             }
+
+            maybe_scope = scope.parent();
         }
 
         return null;
@@ -55,13 +116,18 @@ pub const SymbolTable = struct {
 };
 
 gpa: Allocator,
+/// the allocator used to store the scopes
+scope_arena: Allocator,
 /// the allocator used to store constant Bytecode and strings
 constants_arena: Allocator,
 /// the array of pointers to constants allocated in `constants_arena`
 constants: std.ArrayList(*const anyopaque),
+/// the index into `constants` of the entry point bytecode
+entry_fn: ?usize,
 /// the in progress bytecode emitted
 bytecode: std.ArrayList(u8),
-symbol_table: SymbolTable,
+/// the types constructed
+types: std.MultiArrayList(Type),
 writer: *std.Io.Writer,
 allocated_regs: u8,
 stack_size: u8,
@@ -69,12 +135,105 @@ last_emitted_op: Opcode = .call,
 ast: *const Ast,
 diagnositcs: *Diagnostics,
 
+pub fn init(
+    ast: *const Ast,
+    gpa: Allocator,
+    constants_arena: Allocator,
+    scope_arena: Allocator,
+    writer: *std.Io.Writer,
+    diagnostics: *Diagnostics,
+) Self {
+    return .{
+        .writer = writer,
+        .stack_size = 0,
+        .entry_fn = null,
+        .allocated_regs = 0,
+        .bytecode = .empty,
+        .types = .empty,
+        .gpa = gpa,
+        .constants = .empty,
+        .constants_arena = constants_arena,
+        .scope_arena = scope_arena,
+        .ast = ast,
+        .diagnositcs = diagnostics,
+    };
+}
+
+const ReturnInfo = struct {
+    return_type: Type.Ref,
+    return_type_node: Node.Index,
+
+    pub const dummy: ReturnInfo = .{
+        .return_type = .poison,
+        .return_type_node = undefined,
+    };
+};
+
+fn getType(s: *Self, t: Type.Ref) Type {
+    assert(t.isIdx());
+    return s.types.get(@backingInt(t) - Type.Ref.static_len);
+}
+
+fn addType(s: *Self, t: Type) error{OutOfMemory}!Type.Ref {
+    const result = s.types.len;
+    try s.types.append(s.gpa, t);
+    return .fromIdx(result);
+}
+
+fn typesEql(s: *Self, a: Type.Ref, b: Type.Ref) bool {
+    if (a.isIdx() and b.isIdx()) {
+        const a_data = s.getType(a);
+        const b_data = s.getType(b);
+
+        // TODO: non-atomic type equality
+        _ = a_data;
+        _ = b_data;
+    }
+    return a == b;
+}
+
+/// returns the Least Upper Bound type between two types, asserting compatability
+fn commonType(s: *Self, a: Type.Ref, b: Type.Ref) Type.Ref {
+    // TODO: non-atomic LUB types
+    if (a == .poison or b == .poison) return .poison;
+    if (a == .noreturn) return b;
+    if (b == .noreturn) return a;
+
+    if (s.typesEql(a, b)) return a;
+
+    if (a == .real and b == .int or
+        b == .real and a == .int)
+    {
+        return .real;
+    }
+
+    unreachable;
+}
+
+/// checks if two types can coerce into the same type
+fn typesCompat(s: *Self, a: Type.Ref, b: Type.Ref) bool {
+    // TODO: non-atomic type compatability
+    if (a == .poison or b == .poison) return true;
+    if (a == .noreturn or b == .noreturn) return true;
+    if (s.typesEql(a, b)) return true;
+
+    if (a == .real and b == .int or
+        b == .real and a == .int)
+    {
+        return true;
+    }
+
+    return false;
+}
+
 fn emitError(s: *Self, data: Diagnostic.Data, span: Span) Error!void {
     try s.diagnositcs.add(.{ .level = .@"error", .data = data, .span = span });
 }
 
-pub fn pushScope(s: *Self, scope: Scope) Allocator.Error!void {
-    return s.symbol_table.scopes.append(s.gpa, scope);
+pub fn addScope(s: *Self, comptime T: type, scope: T) Allocator.Error!*Scope {
+    const scope_ptr = try s.scope_arena.create(T);
+    scope_ptr.* = scope;
+    return &scope_ptr.base;
 }
 
 pub fn emitOp(s: *Self, op: Opcode) Error!void {
@@ -128,17 +287,24 @@ fn createBytecode(s: *Self) Error!usize {
 pub fn genBytecode(s: *Self) Error!void {
     const root_node = s.ast.getNode(.root);
 
+    var root_scope: Scope.Root = .{};
+    var container_scope: Scope.Container = .{
+        .parent = &root_scope.base,
+        .decls = .empty,
+    };
+    defer container_scope.decls.deinit(s.gpa);
+
     for (s.ast.extraDataSlice(root_node.data.extra_range, Node.Index)) |node| {
-        try s.genDecl(node);
+        try s.genDecl(&container_scope.base, node);
     }
 
     if (s.diagnositcs.diagnostics.len > 0) return error.GenError;
 }
 
-fn genDecl(s: *Self, decl: Node.Index) Error!void {
+fn genDecl(s: *Self, scope: *Scope, decl: Node.Index) Error!void {
     const node = s.ast.getNode(decl);
     switch (node.kind) {
-        .func_decl => return s.genFuncDecl(decl),
+        .func_decl => return s.genFuncDecl(scope, decl),
         .var_decl => {
             return s.emitError(
                 .{ .direct_msg = "variable declarations at container scope not supported" },
@@ -149,14 +315,23 @@ fn genDecl(s: *Self, decl: Node.Index) Error!void {
     }
 }
 
-fn genFuncDecl(s: *Self, decl: Node.Index) Error!void {
+fn genFuncDecl(s: *Self, scope: *Scope, decl: Node.Index) Error!void {
     s.bytecode = .empty;
     defer s.bytecode.deinit(s.gpa);
 
     const decl_node = s.ast.getNode(decl);
+
+    const func_proto = s.ast.getNode(decl_node.data.node_and_node.@"0");
+
+    const return_type = try s.genTypeExpr(scope, func_proto.data.node_and_extra.node);
     const block = decl_node.data.node_and_node.@"1";
 
-    _ = try s.genBlock(block);
+    const return_info: ReturnInfo = .{
+        .return_type = return_type,
+        .return_type_node = func_proto.data.node_and_extra.node,
+    };
+
+    _ = try s.genBlock(scope, block, &return_info);
 
     if (s.last_emitted_op != .func_return) {
         try s.emitOp(.func_return);
@@ -164,40 +339,66 @@ fn genFuncDecl(s: *Self, decl: Node.Index) Error!void {
 
     const constant = try s.createBytecode();
 
-    try s.pushScope(.{ .var_decl = .{
-        .ident = s.ast.tokenString(decl_node.main_token + 1),
-        .symbol = .{
-            .value = .{ .constant = constant },
-            .type = .{ .kind = .int },
-        },
-        .is_var = false,
-    } });
+    assert(scope.kind == .container);
+
+    const ident = s.ast.tokenString(decl_node.main_token + 1);
+
+    if (std.mem.eql(u8, "main", ident)) {
+        s.entry_fn = constant;
+    }
+
+    const container = scope.cast(Scope.Container);
+    try container.decls.append(s.gpa, .{
+        s.ast.tokenString(decl_node.main_token + 1),
+        .{ .value = .{ .constant = constant }, .type = try s.addType(.{
+            .func = .{ .return_type = return_type },
+        }) },
+    });
 }
 
-fn genVarDecl(s: *Self, decl: Node.Index) Error!void {
+fn genVarDecl(s: *Self, scope: *Scope, decl: Node.Index, return_info: *const ReturnInfo) Error!*Scope {
     const node = s.ast.getNode(decl);
 
     const var_reg = s.allocReg();
 
-    const initial_type = try s.genExpr(node.data.node_and_opt.@"0");
+    const initial_type = try s.genExpr(scope, node.data.node_and_opt.@"0", return_info);
+    var var_type = initial_type;
+
+    if (node.data.node_and_opt.@"1".toOptional()) |type_expr| {
+        const specified_type = try s.genTypeExpr(scope, type_expr);
+
+        var_type = specified_type;
+
+        if (!s.typesEql(specified_type, initial_type)) {
+            try s.emitError(
+                .{ .expected_type_because = .{
+                    .expected = specified_type,
+                    .because = type_expr,
+                    .found = initial_type,
+                } },
+                s.ast.nodeSpan(node.data.node_and_opt.@"0"),
+            );
+        }
+    }
 
     try s.emitOp(.store_to_reg);
     try s.emitVal(var_reg);
 
-    try s.pushScope(.{
-        .var_decl = .{
-            .is_var = s.ast.tokenTag(node.main_token) == .keyword_var,
-            .ident = s.ast.tokenString(node.main_token + 1),
-            .symbol = .{
-                .type = initial_type,
-                .value = .{ .reg = var_reg },
-            },
+    return s.addScope(Scope.LocalVar, .{
+        .parent = scope,
+        .is_var = s.ast.tokenTag(node.main_token) == .keyword_var,
+        .ident = s.ast.tokenString(node.main_token + 1),
+        .symbol = .{
+            .type = var_type,
+            .value = .{ .reg = var_reg },
         },
     });
 }
 
-fn genBlock(s: *Self, block: Node.Index) Error!Symbol.Type {
+fn genBlock(s: *Self, base: *Scope, block: Node.Index, return_info: *const ReturnInfo) Error!Type.Ref {
     const node = s.ast.getNode(block);
+
+    var scope = base;
 
     const start_regs = s.allocated_regs;
 
@@ -206,33 +407,70 @@ fn genBlock(s: *Self, block: Node.Index) Error!Symbol.Type {
     for (stmts) |stmt| {
         const stmt_node = s.ast.getNode(stmt);
         switch (stmt_node.kind) {
-            .var_decl => try s.genVarDecl(stmt),
-            else => _ = try s.genExpr(stmt),
+            .var_decl => scope = try s.genVarDecl(scope, stmt, return_info),
+            else => _ = try s.genExpr(scope, stmt, return_info),
         }
     }
 
     s.allocated_regs = start_regs;
 
-    return .atomic(.void);
+    return .void;
+}
+
+/// asserts the expression is a type and returns the contents
+/// of the type expr
+fn genTypeExpr(s: *Self, scope: *Scope, expr: Node.Index) Error!Type.Ref {
+    const node = s.ast.getNode(expr);
+
+    switch (node.kind) {
+        .identifier => {
+            const token_name = s.ast.tokenString(node.main_token);
+
+            const symbol = scope.getSymbol(token_name) orelse {
+                try s.emitError(
+                    .{ .direct_msg = "Use of undeclared identifier" },
+                    s.ast.tokenSpan(node.main_token),
+                );
+                return .poison;
+            };
+
+            if (!s.typesEql(symbol.type, .type)) {
+                try s.emitError(.{ .expected_type = .{
+                    .expected = .type,
+                    .found = symbol.type,
+                } }, s.ast.nodeSpan(expr));
+                return .poison;
+            }
+
+            return symbol.value.type;
+        },
+        else => {
+            try s.emitError(.{ .expected_type = .{
+                .expected = .type,
+                .found = try s.genExpr(scope, expr, &.dummy),
+            } }, s.ast.nodeSpan(expr));
+            return .poison;
+        },
+    }
 }
 
 /// returns the type of the expression
-fn genExpr(s: *Self, expr: Node.Index) Error!Symbol.Type {
+fn genExpr(s: *Self, scope: *Scope, expr: Node.Index, return_info: *const ReturnInfo) Error!Type.Ref {
     const node = s.ast.getNode(expr);
     return switch (node.kind) {
-        .infix_op => try s.genBinOp(node),
+        .infix_op => try s.genBinOp(scope, node, return_info),
         .prefix_op => @panic("Prefix op not implemented yet"),
         .int_literal => try s.genInt(node),
         .identifier => {
             const token = s.ast.tokens.get(node.main_token);
             const name = s.ast.source[token.loc.start..token.loc.end];
 
-            const symbol = s.symbol_table.getSymbol(name) orelse {
+            const symbol = scope.getSymbol(name) orelse {
                 try s.emitError(
                     .{ .direct_msg = "Use of undeclared identifier" },
                     s.ast.tokenSpan(node.main_token),
                 );
-                return .atomic(.poison);
+                return .poison;
             };
 
             switch (symbol.value) {
@@ -249,16 +487,16 @@ fn genExpr(s: *Self, expr: Node.Index) Error!Symbol.Type {
             }
             return symbol.type;
         },
-        .block => try s.genBlock(node.data.node),
+        .block => try s.genBlock(scope, node.data.node, return_info),
         .string_literal => @panic("Strings not implemented yet"),
         .func_call => {
-            const func_type = try s.genExpr(node.data.node_and_extra.node);
+            const func_type = try s.genExpr(scope, node.data.node_and_extra.node, return_info);
             _ = func_type;
             try s.emitOp(.call);
 
-            return .atomic(.void);
+            return .void;
         },
-        .@"return" => try s.genReturn(node),
+        .@"return" => try s.genReturn(scope, node, return_info),
         .var_decl => unreachable,
         .func_decl => unreachable,
         .func_proto => unreachable,
@@ -266,7 +504,7 @@ fn genExpr(s: *Self, expr: Node.Index) Error!Symbol.Type {
     };
 }
 
-fn genBinOp(s: *Self, node: Node) Error!Symbol.Type {
+fn genBinOp(s: *Self, scope: *Scope, node: Node, return_info: *const ReturnInfo) Error!Type.Ref {
     const start_regs = s.allocated_regs;
 
     const op: Opcode = switch (s.ast.tokenTag(node.main_token)) {
@@ -277,8 +515,8 @@ fn genBinOp(s: *Self, node: Node) Error!Symbol.Type {
         else => unreachable,
     };
 
-    var lhs_type: Symbol.Type = undefined;
-    var rhs_type: Symbol.Type = undefined;
+    var lhs_type: Type.Ref = undefined;
+    var rhs_type: Type.Ref = undefined;
 
     const rhs = s.ast.getNode(node.data.node_and_node.@"1");
     if (rhs.kind == .int_literal) {
@@ -286,18 +524,18 @@ fn genBinOp(s: *Self, node: Node) Error!Symbol.Type {
         // subtracting 4 to non-imm int op results in imm [`@import("Vm.zig").Opcode`]
         const imm_op: Opcode = @fromBackingInt(@backingInt(op) - 4);
 
-        lhs_type = try s.genExpr(node.data.node_and_node.@"0");
-        rhs_type = .atomic(.int);
+        lhs_type = try s.genExpr(scope, node.data.node_and_node.@"0", return_info);
+        rhs_type = .int;
 
         try s.emitOp(imm_op);
         try s.emitIntFromToken(rhs.main_token);
     } else {
-        rhs_type = try s.genExpr(node.data.node_and_node.@"1");
+        rhs_type = try s.genExpr(scope, node.data.node_and_node.@"1", return_info);
         try s.emitOp(.store_to_reg);
         const rhs_reg = s.allocReg();
         try s.emitVal(rhs_reg);
 
-        lhs_type = try s.genExpr(node.data.node_and_node.@"0");
+        lhs_type = try s.genExpr(scope, node.data.node_and_node.@"0", return_info);
 
         try s.emitOp(op);
         try s.emitVal(rhs_reg);
@@ -305,7 +543,7 @@ fn genBinOp(s: *Self, node: Node) Error!Symbol.Type {
 
     s.allocated_regs = start_regs;
 
-    if (!lhs_type.compatible(.atomic(.int)) or !rhs_type.compatible(.atomic(.int))) {
+    if (!s.typesCompat(lhs_type, .int) or !s.typesCompat(rhs_type, .int)) {
         try s.emitError(
             .{ .incompatible_op_types = .{
                 .lhs = node.data.node_and_node.@"0",
@@ -316,25 +554,36 @@ fn genBinOp(s: *Self, node: Node) Error!Symbol.Type {
             s.ast.tokenSpan(node.main_token),
         );
 
-        return .atomic(.poison);
+        return .poison;
     }
 
-    return .common(lhs_type, rhs_type);
+    return s.commonType(lhs_type, rhs_type);
 }
 
-fn genInt(s: *Self, node: Node) Error!Symbol.Type {
+fn genInt(s: *Self, node: Node) Error!Type.Ref {
     try s.emitOp(.load_int_imm);
     try s.emitIntFromToken(node.main_token);
 
-    return .atomic(.int);
+    return .int;
 }
 
-fn genReturn(s: *Self, node: Node) Error!Symbol.Type {
+fn genReturn(s: *Self, scope: *Scope, node: Node, return_info: *const ReturnInfo) Error!Type.Ref {
     if (node.data.opt.toOptional()) |expr| {
-        _ = try s.genExpr(expr);
+        const return_type = try s.genExpr(scope, expr, return_info);
+
+        if (!s.typesCompat(return_type, return_info.return_type)) {
+            try s.emitError(
+                .{ .incompatible_return_types = .{
+                    .expected = return_info.return_type,
+                    .return_type_node = return_info.return_type_node,
+                    .found = return_type,
+                } },
+                s.ast.nodeSpan(expr),
+            );
+        }
     }
 
     try s.emitOp(.func_return);
 
-    return .atomic(.noreturn);
+    return .noreturn;
 }

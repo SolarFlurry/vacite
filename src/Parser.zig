@@ -259,7 +259,10 @@ fn parseFuncDecl(p: *Parser) Error!Node.Index {
         .data = .{ .node_and_node = .{
             p.setNode(func_node_idx, .{
                 .main_token = fn_token,
-                .data = .{ .node = return_type },
+                .data = .{ .node_and_extra = .{
+                    .node = return_type,
+                    .extra = undefined,
+                } },
                 .kind = .func_proto,
             }),
             block,

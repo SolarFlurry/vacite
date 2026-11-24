@@ -3,12 +3,12 @@ const std = @import("std");
 const Symbol = @This();
 
 value: Value,
-type: Type,
+type: Type.Ref,
 
-pub fn atomicType(kind: Type.Kind) Symbol {
+pub fn atomicType(ref: Type.Ref) Symbol {
     return .{
-        .value = .{ .type = .atomic(kind) },
-        .type = .atomic(.type),
+        .value = .{ .type = ref },
+        .type = .type,
     };
 }
 
@@ -18,14 +18,15 @@ pub const Value = union(enum) {
     /// allocated register
     reg: u8,
     /// holds a compile time type value
-    type: Type,
+    type: Type.Ref,
 };
 
-pub const Type = struct {
-    kind: Kind,
-    // data: Data,
+pub const Type = union(enum(u8)) {
+    func: struct {
+        return_type: Ref,
+    },
 
-    pub const Kind = enum(u8) {
+    pub const Ref = enum(u32) {
         int,
         real,
         bool,
@@ -35,32 +36,36 @@ pub const Type = struct {
         noreturn,
         poison,
         _,
+
+        pub const static_len = @typeInfo(Ref).@"enum".field_names.len;
+
+        pub fn fromIdx(index: usize) Ref {
+            return @fromBackingInt(@intCast(index + static_len));
+        }
+
+        pub fn isIdx(ref: Ref) bool {
+            return @backingInt(ref) >= static_len;
+        }
+
+        pub fn toString(t: Ref) []const u8 {
+            switch (t) {
+                .int => return "int",
+                .real => return "real",
+                .bool => return "bool",
+                .str => return "str",
+                .type => return "type",
+                .void => return "void",
+                .noreturn => return "noreturn",
+                else => return "(unknown)",
+            }
+        }
     };
 
-    pub const Data = union {};
-
-    pub fn atomic(kind: Kind) Type {
-        return .{ .kind = kind };
+    pub fn eql(a: Ref, b: Ref) bool {
+        return a == b;
     }
 
-    pub fn toString(t: Type) []const u8 {
-        switch (t.kind) {
-            .int => return "int",
-            .real => return "real",
-            .bool => return "bool",
-            .str => return "str",
-            .type => return "type",
-            .void => return "void",
-            .noreturn => return "noreturn",
-            else => return "(unknown)",
-        }
-    }
-
-    pub fn eql(a: Type, b: Type) bool {
-        return a.kind == b.kind;
-    }
-
-    pub fn compatible(a: Type, b: Type) bool {
+    pub fn compatible(a: Ref, b: Ref) bool {
         if (a.kind == .poison or b.kind == .poison) return true;
         if (a.kind == .noreturn or b.kind == .noreturn) return true;
         if (eql(a, b)) return true;

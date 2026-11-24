@@ -302,3 +302,32 @@ pub fn next(self: *Self) Token {
     result.loc.end = self.index;
     return result;
 }
+
+pub fn tokeniseAllTags(gpa: std.mem.Allocator, src: [:0]const u8) error{OutOfMemory}![]Token.Tag {
+    var lexer: Self = .init(src);
+    var tokens: std.ArrayList(Token.Tag) = .empty;
+
+    var token = lexer.next();
+
+    while (token.tag != .eof) {
+        try tokens.append(gpa, token.tag);
+        token = lexer.next();
+    }
+
+    return tokens.toOwnedSlice(gpa);
+}
+
+test "idents" {
+    const gpa = std.testing.allocator;
+
+    const tokens = try tokeniseAllTags(gpa, "hello hello_world foo foo-bar cutoff-");
+    defer gpa.free(tokens);
+
+    try std.testing.expectEqualSlices(Token.Tag, tokens, &.{
+        .identifier,
+        .identifier,
+        .identifier,
+        .identifier,
+        .identifier,
+    });
+}
