@@ -246,6 +246,7 @@ pub fn genBytecode(
     gpa: Allocator,
     writer: *std.Io.Writer,
     diagnostics: *Diagnostics,
+    should_print_bytecode: bool,
 ) BytecodeGen.Error!Vm {
     var constants_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
 
@@ -259,6 +260,7 @@ pub fn genBytecode(
         scopes_arena.allocator(),
         writer,
         diagnostics,
+        should_print_bytecode,
     );
 
     defer {

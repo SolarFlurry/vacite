@@ -131,9 +131,8 @@ fn run(
 
     if (debug_flags.tokens) try ast.printTokens(writer);
     if (debug_flags.ast) try writer.print("{f}", .{ast});
-    // TODO: use `debug_flags.bytecode` to control the output of bytecode
 
-    var vm = ast.genBytecode(gpa, writer, &diagnostics) catch |err| {
+    var vm = ast.genBytecode(gpa, writer, &diagnostics, debug_flags.bytecode) catch |err| {
         if (err != error.GenError) return err;
         try diagnostics.reportAll(&ast, writer);
         return;

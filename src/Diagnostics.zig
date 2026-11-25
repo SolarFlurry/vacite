@@ -368,6 +368,7 @@ pub fn add(s: *Diagnostics, diag: Diagnostic) std.mem.Allocator.Error!void {
 }
 
 pub fn reportAll(s: *Diagnostics, ast: *const Ast, writer: *std.Io.Writer) error{ WriteFailed, OutOfMemory }!void {
+    try writer.writeByte('\n');
     for (0..s.diagnostics.len) |i| {
         const diag = s.diagnostics.get(i);
         try diag.write(s.arena.allocator(), ast, writer);

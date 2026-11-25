@@ -34,6 +34,7 @@ types_data: std.ArrayList(u32),
 writer: *std.Io.Writer,
 allocated_regs: u8,
 stack_size: u8,
+should_print_bytecode: bool,
 last_emitted_op: Opcode = .call,
 ast: *const Ast,
 diagnositcs: *Diagnostics,
@@ -272,6 +273,7 @@ pub fn init(
     scope_arena: Allocator,
     writer: *std.Io.Writer,
     diagnostics: *Diagnostics,
+    should_print_bytecode: bool,
 ) Self {
     return .{
         .writer = writer,
@@ -287,6 +289,7 @@ pub fn init(
         .scope_arena = scope_arena,
         .ast = ast,
         .diagnositcs = diagnostics,
+        .should_print_bytecode = should_print_bytecode,
     };
 }
 
@@ -460,12 +463,12 @@ fn genFuncDecl(s: *Self, scope: *Scope, decl: Node.Index) Error!void {
     const is_main_func = std.mem.eql(u8, "main", ident);
     const constant = try s.createBytecode(bytecode_offset);
 
-    // -- DEBUG --
-    if (is_main_func) try s.writer.writeAll("entry ");
-    try s.writer.print("func \"{s}\":\n", .{ident});
-    try debug.debugBytecode(s.bytecode.items, bytecode_offset, s.writer);
-    try s.writer.writeByte('\n');
-    // --
+    if (s.should_print_bytecode) {
+        if (is_main_func) try s.writer.writeAll("entry ");
+        try s.writer.print("func \"{s}\":\n", .{ident});
+        try debug.debugBytecode(s.bytecode.items, bytecode_offset, s.writer);
+        try s.writer.writeByte('\n');
+    }
 
     if (is_main_func) {
         s.entry_fn = constant;
