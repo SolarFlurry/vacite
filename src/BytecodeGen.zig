@@ -23,7 +23,7 @@ scope_arena: Allocator,
 constants_arena: Allocator,
 /// the array of pointers to constants allocated in `constants_arena`
 constants: std.ArrayList(*const anyopaque),
-/// the index into `constants` of the entry point bytecode
+/// the index into `constants` of the entry point function
 entry_fn: ?usize,
 /// the in progress bytecode emitted
 bytecode: std.ArrayList(u8),
@@ -393,25 +393,17 @@ pub fn emitIntFromToken(s: *Self, tok_i: TokenIndex) Error!void {
     try s.emitVal(int);
 }
 
-/// creates the bytecode and pushes it to the constants array
-/// layout:
-///     [0..4] len of the bytecode
-///     [4..8] number of registers (stack size)
-///     [8..] bytecode instructions
-fn createBytecode(s: *Self) Error!usize {
-    const bytecode = try s.constants_arena.alignedAlloc(u8, .@"8", 8 + s.bytecode.items.len);
+/// creates the Vm.Value.Func and pushes it to the constants array
+fn createBytecode(s: *Self, offset: usize) Error!usize {
+    const bytecode = try s.constants_arena.create(Vm.Value.Func);
 
     try debug.debugBytecode(s.bytecode.items, s.writer);
     try s.writer.writeByte('\n');
 
-    // write the bytecode len and stack size
-    std.mem.writeInt(u32, bytecode[0..4], @intCast(s.bytecode.items.len), .native);
-    std.mem.writeInt(u32, bytecode[4..8], s.stack_size, .native);
-
-    @memcpy(bytecode[8..], s.bytecode.items);
+    bytecode.* = .{ .bytecode_offset = offset, .reg_file_size = s.stack_size };
 
     const result = s.constants.items.len;
-    try s.constants.append(s.gpa, bytecode.ptr);
+    try s.constants.append(s.gpa, bytecode);
     return result;
 }
 
@@ -447,8 +439,7 @@ fn genDecl(s: *Self, scope: *Scope, decl: Node.Index) Error!void {
 }
 
 fn genFuncDecl(s: *Self, scope: *Scope, decl: Node.Index) Error!void {
-    s.bytecode = .empty;
-    defer s.bytecode.deinit(s.gpa);
+    const bytecode_offset = s.bytecode.items.len;
 
     const decl_node = s.ast.getNode(decl);
 
@@ -468,7 +459,7 @@ fn genFuncDecl(s: *Self, scope: *Scope, decl: Node.Index) Error!void {
         try s.emitOp(.func_return);
     }
 
-    const constant = try s.createBytecode();
+    const constant = try s.createBytecode(bytecode_offset);
 
     assert(scope.kind == .container);
 

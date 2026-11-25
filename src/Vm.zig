@@ -10,6 +10,8 @@ constants: []const *const anyopaque,
 acc: Value,
 arena: std.heap.ArenaAllocator,
 gpa: Allocator,
+/// instructions
+instrs: []const u8,
 /// program counter
 pc: usize,
 /// frame pointer
@@ -29,10 +31,18 @@ pub const Value = extern union {
     pub fn fromUsize(val: usize) Value {
         return @as(*const Value, @ptrCast(&val)).*;
     }
+
+    pub const StringHeader = struct {
+        len: usize,
+    };
+
+    pub const Func = struct {
+        bytecode_offset: usize,
+        reg_file_size: usize,
+    };
 };
 
 pub const StackFrameHeader = struct {
-    instrs: []const u8,
     callee_pc: usize,
     callee_fp: usize,
 };
@@ -99,62 +109,47 @@ pub const Opcode = enum(u8) {
     };
 };
 
-pub fn getBytecodeArrayFromPtr(bytecode_ptr: [*]const u8) BytecodeArray {
-    const len = std.mem.readInt(u32, bytecode_ptr[0..4], .native);
-    const stack_size = std.mem.readInt(u32, bytecode_ptr[4..8], .native);
-    const instrs = bytecode_ptr[8 .. 8 + len];
-
-    return .{
-        .bytecode = instrs,
-        .stack_size = stack_size,
-    };
-}
-
 pub fn deinit(s: *Vm) void {
     s.stack.deinit(s.gpa);
     s.arena.deinit();
+    s.gpa.free(s.instrs);
+    s.gpa.free(s.constants);
 }
 
-pub fn pushStackFrame(s: *Vm, instrs: []const u8, reg_file_size: usize) error{OutOfMemory}!void {
+pub fn pushStackFrame(s: *Vm, func_data: Value.Func) error{OutOfMemory}!void {
     const stack_frame: StackFrameHeader = .{
-        .instrs = instrs,
         .callee_pc = s.pc,
         .callee_fp = s.fp,
     };
 
-    try s.stack.ensureTotalCapacity(s.gpa, s.stack.items.len + 4 + reg_file_size);
+    try s.stack.ensureTotalCapacity(s.gpa, s.stack.items.len + 2 + func_data.reg_file_size);
 
     s.fp = s.stack.items.len;
 
-    s.stack.appendAssumeCapacity(@intFromPtr(stack_frame.instrs.ptr));
-    s.stack.appendAssumeCapacity(stack_frame.instrs.len);
     s.stack.appendAssumeCapacity(stack_frame.callee_pc);
     s.stack.appendAssumeCapacity(stack_frame.callee_fp);
 
-    s.stack.items.len += reg_file_size;
-    s.pc = 0;
+    s.stack.items.len += func_data.reg_file_size;
+    s.pc = func_data.bytecode_offset;
 }
 
 pub fn currentStackFrame(s: *Vm) StackFrameHeader {
-    const instrs_ptr: [*]const u8 = @ptrFromInt(s.stack.items[s.fp]);
-
     return .{
-        .instrs = instrs_ptr[0..s.stack.items[s.fp + 1]],
-        .callee_pc = s.stack.items[s.fp + 2],
-        .callee_fp = s.stack.items[s.fp + 3],
+        .callee_pc = s.stack.items[s.fp],
+        .callee_fp = s.stack.items[s.fp + 1],
     };
 }
 
 fn getReg(s: *Vm, reg: usize) Value {
-    return .fromUsize(s.stack.items[s.fp + 4 + reg]);
+    return .fromUsize(s.stack.items[s.fp + 2 + reg]);
 }
 
 fn setReg(s: *Vm, reg: usize, value: Value) void {
-    s.stack.items[s.fp + 4 + reg] = value.toUsize();
+    s.stack.items[s.fp + 2 + reg] = value.toUsize();
 }
 
 fn readInstr(s: *Vm) Opcode {
-    const result: Opcode = @fromBackingInt(s.currentStackFrame().instrs[s.pc]);
+    const result: Opcode = @fromBackingInt(s.instrs[s.pc]);
     s.pc += 1;
     return result;
 }
@@ -169,7 +164,7 @@ fn readBytes(s: *Vm, comptime T: type, width: u8) T {
 
             const thing: WorkingType = std.mem.readInt(
                 WorkingType,
-                @ptrCast(s.currentStackFrame().instrs[s.pc .. s.pc + width]),
+                @ptrCast(s.instrs[s.pc .. s.pc + width]),
                 .native,
             );
 
@@ -250,10 +245,10 @@ pub fn run(s: *Vm, writer: *std.Io.Writer) error{ WriteFailed, OutOfMemory }!voi
             },
 
             .call => {
-                const bytecode_ptr: [*]const u8 = @ptrCast(s.acc.heap_obj);
-                const bytecode = getBytecodeArrayFromPtr(bytecode_ptr);
+                const func_ptr: [*]const u8 = @ptrCast(s.acc.heap_obj);
+                const func = std.mem.bytesAsValue(Value.Func, func_ptr);
 
-                try s.pushStackFrame(bytecode.bytecode, bytecode.stack_size);
+                try s.pushStackFrame(func.*);
             },
 
             .str_write => {

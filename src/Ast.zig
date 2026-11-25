@@ -263,24 +263,24 @@ pub fn genBytecode(
 
     defer {
         bytecode_gen.types.deinit(gpa);
+        bytecode_gen.bytecode.deinit(gpa);
+        bytecode_gen.constants.deinit(gpa);
     }
 
     bytecode_gen.genBytecode() catch |err| {
-        bytecode_gen.constants.deinit(gpa);
         return err;
     };
 
     var vm: Vm = .{
         .arena = constants_arena,
-        .constants = try constants_arena.allocator().dupe(*const anyopaque, bytecode_gen.constants.items),
+        .constants = try bytecode_gen.constants.toOwnedSlice(gpa),
         .gpa = gpa,
         .stack = .empty,
+        .instrs = try bytecode_gen.bytecode.toOwnedSlice(gpa),
         .fp = 0,
         .pc = 0,
         .acc = undefined,
     };
-
-    bytecode_gen.constants.deinit(gpa);
 
     const bytecode_ptr: [*]const u8 = @ptrCast(vm.constants[
         bytecode_gen.entry_fn orelse {
@@ -289,9 +289,9 @@ pub fn genBytecode(
         }
     ]);
 
-    const bytecode = Vm.getBytecodeArrayFromPtr(bytecode_ptr);
+    const func = std.mem.bytesToValue(Vm.Value.Func, bytecode_ptr);
 
-    try vm.pushStackFrame(bytecode.bytecode, bytecode.stack_size);
+    try vm.pushStackFrame(func);
 
     return vm;
 }
