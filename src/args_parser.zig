@@ -35,6 +35,10 @@ pub fn ComptimeStack(comptime T: type, comptime max_size: usize) type {
     };
 }
 
+pub const Diagnostics = struct {
+    offender: []const u8,
+};
+
 pub const ParamRange = struct {
     start: u32,
     end: u32,
@@ -171,11 +175,12 @@ pub fn ParamsTree(comptime str: []const u8) type {
             comptime value_parsers: anytype,
             args: std.process.Args,
             arena: std.mem.Allocator,
+            diag: *Diagnostics,
         ) !tree.ParseResult(value_parsers) {
             const arg_slice = try args.toSlice(arena);
             if (arg_slice.len == 1) return error.NotEnoughArgs;
 
-            return tree.parseSubcmd(value_parsers, tree.root, arg_slice[1..], 0);
+            return tree.parseSubcmd(value_parsers, tree.root, arg_slice[1..], 0, diag);
         }
 
         pub fn parseSubcmd(
@@ -184,10 +189,19 @@ pub fn ParamsTree(comptime str: []const u8) type {
             comptime cmd: Subcommand,
             args: []const []const u8,
             start: usize,
+            diag: *Diagnostics,
         ) !tree.SubcommandResult(cmd, value_parsers) {
             var res: tree.SubcommandResult(cmd, value_parsers) = .{};
 
+            var current_positional: usize = 0;
             var i = start;
+
+            defer if (i < args.len) {
+                diag.offender = args[i];
+            } else {
+                diag.offender = "";
+            };
+
             args_loop: while (i < args.len) : (i += 1) {
                 const arg = args[i];
                 if (arg[0] == '-') {
@@ -200,7 +214,13 @@ pub fn ParamsTree(comptime str: []const u8) type {
                         inline for (tree.options[cmd.options.start..cmd.options.end]) |option| {
                             if (option.short == null) continue;
                             if (option.short.? == short) {
-                                @field(res.opts, option.long) = true;
+                                @field(res.opts, option.long) = if (option.positional) |pos_idx| blk: {
+                                    const positional = tree.positionals[pos_idx];
+                                    i += 1;
+                                    if (i >= args.len) return error.NotEnoughArgs;
+
+                                    break :blk try @field(value_parsers, positional.type)(args[i]);
+                                } else true;
                                 continue :args_loop;
                             }
                         }
@@ -230,28 +250,30 @@ pub fn ParamsTree(comptime str: []const u8) type {
                         res.cmd = @unionInit(
                             @TypeOf(res.cmd),
                             subcmd.name,
-                            try tree.parseSubcmd(value_parsers, subcmd, args, i),
+                            try tree.parseSubcmd(value_parsers, subcmd, args, i, diag),
                         );
                         return res;
                     }
                 }
 
-                inline for (tree.positionals[cmd.positionals.start..cmd.positionals.end], 0..) |positional, j| {
-                    if (i >= args.len) return error.NotEnoughArgs;
-                    const pos_arg = args[i];
-                    i += 1;
+                switch (current_positional) {
+                    inline 0...cmd.positionals.end - cmd.positionals.start - 1 => |current_pos| {
+                        const positional = tree.positionals[current_pos];
+                        if (i >= args.len) return error.NotEnoughArgs;
+                        const pos_arg = args[i];
 
-                    const result = try @field(value_parsers, positional.type)(pos_arg);
+                        const result = try @field(value_parsers, positional.type)(pos_arg);
 
-                    if (cmd.branches.end - cmd.branches.start == 0) {
-                        @field(res.pos_args, std.fmt.comptimePrint("{d}", .{j})) = result;
-                    } else {
-                        res.cmd = @unionInit(@TypeOf(res.cmd), "pos_args", undefined);
-                        @field(res.cmd.pos_args, std.fmt.comptimePrint("{d}", .{j})) = result;
-                    }
+                        if (cmd.branches.end - cmd.branches.start == 0) {
+                            @field(res.pos_args, std.fmt.comptimePrint("{d}", .{current_pos})) = result;
+                        } else {
+                            res.cmd = @unionInit(@TypeOf(res.cmd), "pos_args", undefined);
+                            @field(res.cmd.pos_args, std.fmt.comptimePrint("{d}", .{current_pos})) = result;
+                        }
+                        current_positional += 1;
+                    },
+                    else => return error.UnexpectedArg,
                 }
-
-                if (i < args.len) return error.UnexpectedArg;
             }
 
             return res;

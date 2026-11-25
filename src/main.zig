@@ -50,16 +50,18 @@ pub fn main(init: std.process.Init) !void {
 
     const helpString = comptime tree.helpString("vacite");
 
+    var diag: args_parser.Diagnostics = undefined;
+
     const res = tree.parse(.{
         .file = args_parser.parsers.string,
         .dbg = parseDbg,
-    }, init.minimal.args, arena) catch |err| {
+    }, init.minimal.args, arena, &diag) catch |err| {
         switch (err) {
             error.LoneSingleDash => try print(writer, "<r>[Error]<0> Lone single dash\n", .{}),
-            error.SingleDashLong => try print(writer, "<r>[Error]<0> Single dash on a long form option\n", .{}),
-            error.UnexpectedArg => try print(writer, "<r>[Error]<0> Unexpected arg\n", .{}),
-            error.UnknownOption => try print(writer, "<r>[Error]<0> Unknown option\n", .{}),
-            error.UnknownDebugFlag => try print(writer, "<r>[Error]<0> Unknown debug flag, the accepted values are 't', 'a' and 'b'\n", .{}),
+            error.SingleDashLong => try print(writer, "<r>[Error]<0> Single dash on a long form option '{s}'\n", .{diag.offender}),
+            error.UnexpectedArg => try print(writer, "<r>[Error]<0> Unexpected arg '{s}'\n", .{diag.offender}),
+            error.UnknownOption => try print(writer, "<r>[Error]<0> Unknown option '{s}'\n", .{diag.offender}),
+            error.UnknownDebugFlag => try print(writer, "<r>[Error]<0> Unknown debug flag '{s}', the accepted values are 't', 'a' and 'b'\n", .{diag.offender}),
             error.NotEnoughArgs => try writer.writeAll(helpString),
             else => return err,
         }
