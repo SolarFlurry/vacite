@@ -1,5 +1,5 @@
 func fib() int {
-    return;
+    return "42";
 };
 
 func main() void {

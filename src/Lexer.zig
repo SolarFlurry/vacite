@@ -108,6 +108,7 @@ const State = enum {
     identifier,
     integer,
     float,
+    string,
     equal,
     plus,
     minus,
@@ -154,6 +155,11 @@ pub fn next(self: *Self) Token {
             '0'...'9' => {
                 result.tag = .int_literal;
                 continue :state .integer;
+            },
+            '"' => {
+                result.tag = .string_literal;
+                self.index += 1;
+                continue :state .string;
             },
             '=' => continue :state .equal,
             '+' => continue :state .plus,
@@ -241,6 +247,17 @@ pub fn next(self: *Self) Token {
             switch (self.source[self.index]) {
                 '0'...'9', '_' => continue :state .float,
                 else => {},
+            }
+        },
+        .string => {
+            switch (self.source[self.index]) {
+                '"' => {
+                    self.index += 1;
+                },
+                else => {
+                    self.index += 1;
+                    continue :state .string;
+                },
             }
         },
         .equal => {

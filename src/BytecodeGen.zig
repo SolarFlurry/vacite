@@ -622,7 +622,29 @@ fn genExpr(s: *Self, scope: *Scope, expr: Node.Index, return_info: *const Return
             return symbol.type;
         },
         .block => try s.genBlock(scope, node.data.node, return_info),
-        .string_literal => @panic("Strings not implemented yet"),
+        .string_literal => {
+            const token_string = s.ast.tokenString(node.main_token);
+            assert(token_string.len >= 2);
+            assert(token_string[0] == '"');
+            assert(token_string[token_string.len - 1] == '"');
+
+            const string_splice = token_string[1 .. token_string.len - 1];
+
+            // adds @sizeOf(usize) for the string length
+            const string_ptr = try s.constants_arena.alloc(u8, string_splice.len + @sizeOf(usize));
+
+            std.mem.writeInt(usize, string_ptr[0..@sizeOf(usize)], string_splice.len, .native);
+            @memcpy(string_ptr[@sizeOf(usize)..], string_splice);
+
+            const string_constant: u64 = @intCast(s.constants.items.len);
+            try s.constants.append(s.gpa, string_ptr.ptr);
+
+            try s.emitOp(.width64);
+            try s.emitOp(.load_constant);
+            try s.emitVal(string_constant);
+
+            return .str;
+        },
         .func_call => {
             const func_type = try s.genExpr(scope, node.data.node_and_extra.node, return_info);
             assert(func_type.isIdx());
