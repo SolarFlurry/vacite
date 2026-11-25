@@ -5,8 +5,6 @@ const assert = std.debug.assert;
 const Ast = @import("Ast.zig");
 const Node = Ast.Node;
 const TokenIndex = Ast.TokenIndex;
-pub const Symbol = @import("BytecodeGen/Symbol.zig");
-const Type = Symbol.Type;
 const Diagnostics = @import("Diagnostics.zig");
 const Diagnostic = Diagnostics.Diagnostic;
 const Span = @import("Lexer.zig").Span;
@@ -17,6 +15,132 @@ const debug = @import("Vm/debug.zig");
 pub const Error = Allocator.Error || error{ GenError, WriteFailed };
 
 const Self = @This();
+
+gpa: Allocator,
+/// the allocator used to store the scopes
+scope_arena: Allocator,
+/// the allocator used to store constant Bytecode and strings
+constants_arena: Allocator,
+/// the array of pointers to constants allocated in `constants_arena`
+constants: std.ArrayList(*const anyopaque),
+/// the index into `constants` of the entry point bytecode
+entry_fn: ?usize,
+/// the in progress bytecode emitted
+bytecode: std.ArrayList(u8),
+/// the types constructed
+types: std.MultiArrayList(Type),
+/// extra data associated with types
+types_data: std.ArrayList(u32),
+writer: *std.Io.Writer,
+allocated_regs: u8,
+stack_size: u8,
+last_emitted_op: Opcode = .call,
+ast: *const Ast,
+diagnositcs: *Diagnostics,
+
+pub const ExtraIndex = enum(u32) { _ };
+
+pub const Symbol = struct {
+    value: Value,
+    type: Type.Ref,
+
+    pub fn atomicType(ref: Type.Ref) Symbol {
+        return .{
+            .value = .{ .type = ref },
+            .type = .type,
+        };
+    }
+
+    pub const Value = union(enum) {
+        /// index into constants array
+        constant: usize,
+        /// allocated register
+        reg: u8,
+        /// holds a compile time type value
+        type: Type.Ref,
+    };
+};
+
+pub const Type = union(enum(u8)) {
+    func: struct {
+        return_type: Ref,
+    },
+
+    pub const Ref = enum(u32) {
+        int,
+        real,
+        bool,
+        str,
+        type,
+        void,
+        noreturn,
+        poison,
+        _,
+
+        pub const static_len = @typeInfo(Ref).@"enum".field_names.len;
+
+        pub fn fromIdx(index: usize) Ref {
+            return @fromBackingInt(@intCast(index + static_len));
+        }
+
+        /// assumes `isIdx() == true`
+        pub fn toIdx(ref: Ref) usize {
+            return @backingInt(ref) - static_len;
+        }
+
+        pub fn isIdx(ref: Ref) bool {
+            return @backingInt(ref) >= static_len;
+        }
+
+        pub fn toString(t: Ref) []const u8 {
+            switch (t) {
+                .int => return "int",
+                .real => return "real",
+                .bool => return "bool",
+                .str => return "str",
+                .type => return "type",
+                .void => return "void",
+                .noreturn => return "noreturn",
+                else => return "(unknown)",
+            }
+        }
+    };
+
+    pub fn eql(a: Ref, b: Ref) bool {
+        return a == b;
+    }
+
+    pub fn compatible(a: Ref, b: Ref) bool {
+        if (a.kind == .poison or b.kind == .poison) return true;
+        if (a.kind == .noreturn or b.kind == .noreturn) return true;
+        if (eql(a, b)) return true;
+
+        if (a.kind == .real and b.kind == .int or
+            b.kind == .real and a.kind == .int)
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    /// returns the Least Upper Bound type between two types, asserting compatability
+    pub fn common(a: Type, b: Type) Type {
+        if (a.kind == .poison or b.kind == .poison) return .atomic(.poison);
+        if (a.kind == .noreturn) return b;
+        if (b.kind == .noreturn) return a;
+
+        if (a.eql(b)) return a;
+
+        if (a.kind == .real and b.kind == .int or
+            b.kind == .real and a.kind == .int)
+        {
+            return .atomic(.real);
+        }
+
+        unreachable;
+    }
+};
 
 pub const Scope = struct {
     kind: Kind,
@@ -115,25 +239,31 @@ pub const Scope = struct {
     }
 };
 
-gpa: Allocator,
-/// the allocator used to store the scopes
-scope_arena: Allocator,
-/// the allocator used to store constant Bytecode and strings
-constants_arena: Allocator,
-/// the array of pointers to constants allocated in `constants_arena`
-constants: std.ArrayList(*const anyopaque),
-/// the index into `constants` of the entry point bytecode
-entry_fn: ?usize,
-/// the in progress bytecode emitted
-bytecode: std.ArrayList(u8),
-/// the types constructed
-types: std.MultiArrayList(Type),
-writer: *std.Io.Writer,
-allocated_regs: u8,
-stack_size: u8,
-last_emitted_op: Opcode = .call,
-ast: *const Ast,
-diagnositcs: *Diagnostics,
+fn addExtraStruct(s: *Self, value: anytype) Allocator.Error!ExtraIndex {
+    const type_info = @typeInfo(@TypeOf(value)).@"struct";
+
+    const result = s.extra_data.items.len;
+
+    inline for (type_info.field_names) |field_name| {
+        _ = try s.addExtra(@field(value, field_name));
+    }
+
+    return @fromBackingInt(@intCast(result));
+}
+
+fn addExtra(s: *Self, value: anytype) Allocator.Error!ExtraIndex {
+    const extra: u32 = switch (@TypeOf(value)) {
+        ExtraIndex,
+        Type.Ref,
+        => @backingInt(value),
+        TokenIndex,
+        => value,
+        else => @compileError("not acceptable type for extra"),
+    };
+
+    try s.extra_data.append(s.gpa, extra);
+    return @fromBackingInt(@intCast(s.extra_data.items.len - 1));
+}
 
 pub fn init(
     ast: *const Ast,
@@ -150,6 +280,7 @@ pub fn init(
         .allocated_regs = 0,
         .bytecode = .empty,
         .types = .empty,
+        .types_data = .empty,
         .gpa = gpa,
         .constants = .empty,
         .constants_arena = constants_arena,
@@ -350,9 +481,12 @@ fn genFuncDecl(s: *Self, scope: *Scope, decl: Node.Index) Error!void {
     const container = scope.cast(Scope.Container);
     try container.decls.append(s.gpa, .{
         s.ast.tokenString(decl_node.main_token + 1),
-        .{ .value = .{ .constant = constant }, .type = try s.addType(.{
-            .func = .{ .return_type = return_type },
-        }) },
+        .{
+            .value = .{ .constant = constant },
+            .type = try s.addType(.{
+                .func = .{ .return_type = return_type },
+            }),
+        },
     });
 }
 
@@ -491,12 +625,25 @@ fn genExpr(s: *Self, scope: *Scope, expr: Node.Index, return_info: *const Return
         .string_literal => @panic("Strings not implemented yet"),
         .func_call => {
             const func_type = try s.genExpr(scope, node.data.node_and_extra.node, return_info);
-            _ = func_type;
+            assert(func_type.isIdx());
+
+            const func_data = s.types.get(func_type.toIdx());
+
+            if (func_data != .func) {
+                s.emitError(
+                    .{ .expected_fn_type = .{
+                        .found = func_type,
+                    } },
+                    s.ast.nodeSpan(node.data.node_and_extra.node),
+                );
+                return .poison;
+            }
+
             try s.emitOp(.call);
 
-            return .void;
+            return func_data.func.return_type;
         },
-        .@"return" => try s.genReturn(scope, node, return_info),
+        .@"return" => try s.genReturn(scope, expr, return_info),
         .var_decl => unreachable,
         .func_decl => unreachable,
         .func_proto => unreachable,
@@ -567,8 +714,9 @@ fn genInt(s: *Self, node: Node) Error!Type.Ref {
     return .int;
 }
 
-fn genReturn(s: *Self, scope: *Scope, node: Node, return_info: *const ReturnInfo) Error!Type.Ref {
-    if (node.data.opt.toOptional()) |expr| {
+fn genReturn(s: *Self, scope: *Scope, node: Node.Index, return_info: *const ReturnInfo) Error!Type.Ref {
+    const node_data = s.ast.getNode(node);
+    if (node_data.data.opt.toOptional()) |expr| {
         const return_type = try s.genExpr(scope, expr, return_info);
 
         if (!s.typesCompat(return_type, return_info.return_type)) {
@@ -579,6 +727,17 @@ fn genReturn(s: *Self, scope: *Scope, node: Node, return_info: *const ReturnInfo
                     .found = return_type,
                 } },
                 s.ast.nodeSpan(expr),
+            );
+        }
+    } else {
+        if (return_info.return_type != .void) {
+            try s.emitError(
+                .{ .incompatible_return_types = .{
+                    .expected = return_info.return_type,
+                    .return_type_node = return_info.return_type_node,
+                    .found = .void,
+                } },
+                s.ast.nodeSpan(node),
             );
         }
     }

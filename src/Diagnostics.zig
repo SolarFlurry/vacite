@@ -3,8 +3,9 @@ const std = @import("std");
 const Ast = @import("Ast.zig");
 const Node = Ast.Node;
 const TokenIndex = Ast.TokenIndex;
-const Symbol = @import("BytecodeGen/Symbol.zig");
-const Type = Symbol.Type;
+const BytecodeGen = @import("BytecodeGen.zig");
+const Symbol = BytecodeGen.Symbol;
+const Type = BytecodeGen.Type;
 pub const Builder = @import("Diagnostics/Builder.zig");
 const Lexer = @import("Lexer.zig");
 const Token = Lexer.Token;
@@ -90,6 +91,9 @@ pub const Diagnostic = struct {
         expected_type_because: struct {
             expected: Type.Ref,
             because: Node.Index,
+            found: Type.Ref,
+        },
+        expected_fn_type: struct {
             found: Type.Ref,
         },
     };
@@ -184,6 +188,16 @@ pub const Diagnostic = struct {
 
                 labels.appendAssumeCapacity(.{
                     .message = try printA(arena, "This has type <r>{s}<0>", .{found_string}),
+                    .span = s.span,
+                });
+            },
+            .expected_fn_type => |d| {
+                const found_string = d.found.toString();
+
+                try print(writer, "Expected a function, got value of type <r>{s}<0>\n", .{found_string});
+
+                labels.appendAssumeCapacity(.{
+                    .message = try printA(arena, "Value has type <r>{s}<0>", .{found_string}),
                     .span = s.span,
                 });
             },
