@@ -253,7 +253,7 @@ pub fn run(s: *Vm, writer: *std.Io.Writer) error{ WriteFailed, OutOfMemory }!voi
 
             .str_write => {
                 const raw_ptr: [*]const u8 = @ptrCast(s.acc.heap_obj);
-                const len = std.mem.readInt(usize, raw_ptr[0..@sizeOf(usize)], .big);
+                const len = std.mem.readInt(usize, raw_ptr[0..@sizeOf(usize)], .native);
                 const bytes = raw_ptr[@sizeOf(usize) .. @sizeOf(usize) + len];
 
                 try writer.writeAll(bytes);

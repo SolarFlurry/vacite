@@ -97,7 +97,7 @@ fn getInstrLength(instr: Opcode.Instr, width: u8) usize {
 }
 
 fn getIntWithWidth(bytes: []const u8, start: usize, comptime int_width: u8) @Int(.unsigned, 1 << int_width + 2) {
-    return std.mem.readInt(@Int(.unsigned, 1 << int_width + 2), @ptrCast(bytes[start .. start + int_width]), .big);
+    return std.mem.readInt(@Int(.unsigned, 1 << int_width + 2), @ptrCast(bytes[start .. start + int_width]), .native);
 }
 
 fn opOneImm(
