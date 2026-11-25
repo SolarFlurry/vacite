@@ -397,7 +397,7 @@ pub fn emitIntFromToken(s: *Self, tok_i: TokenIndex) Error!void {
 fn createBytecode(s: *Self, offset: usize) Error!usize {
     const bytecode = try s.constants_arena.create(Vm.Value.Func);
 
-    try debug.debugBytecode(s.bytecode.items, s.writer);
+    try debug.debugBytecode(s.bytecode.items, offset, s.writer);
     try s.writer.writeByte('\n');
 
     bytecode.* = .{ .bytecode_offset = offset, .reg_file_size = s.stack_size };

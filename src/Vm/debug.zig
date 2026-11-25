@@ -19,8 +19,8 @@ pub fn debugStackFrame(s: *const StackFrame, writer: *std.Io.Writer) !void {
     }
 }
 
-pub fn debugBytecode(s: []const u8, writer: *std.Io.Writer) !void {
-    var i: usize = 0;
+pub fn debugBytecode(s: []const u8, instrs_offset: usize, writer: *std.Io.Writer) !void {
+    var i: usize = instrs_offset;
 
     while (i < s.len) {
         try writer.print("{d: >4} | ", .{i});
