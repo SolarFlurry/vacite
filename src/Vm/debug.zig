@@ -47,24 +47,24 @@ pub fn debugBytecode(s: []const u8, instrs_offset: usize, writer: *std.Io.Writer
         try writer.splatBytesAll("   ", 10 - instr_length);
 
         switch (width) {
-            inline 1...4 => |comp_width| {
-                try writer.writeAll(.{ "", "w16_", "w32_", "w64_" }[comp_width - 1]);
+            inline 1...4 => |w| {
+                try writer.writeAll(.{ "", "w16_", "w32_", "w64_" }[w - 1]);
 
                 switch (instr) {
-                    .store_to_reg => try opOneReg("star", s, writer, i, comp_width),
-                    .load_from_reg => try opOneReg("ldra", s, writer, i, comp_width),
-                    .load_int_imm => try opOneImm("ldia", s, writer, i, comp_width),
-                    .load_constant => try opOneImm("ldca", s, writer, i, comp_width),
+                    .store_to_reg => try writer.print("star : r{d} = acc", .{readInt(s, i + 1, w)}),
+                    .load_from_reg => try writer.print("ldra : acc = r{d}", .{readInt(s, i + 1, w)}),
+                    .load_int_imm => try writer.print("ldia : acc = {d}", .{readInt(s, i + 1, w)}),
+                    .load_constant => try writer.print("ldca : acc = c{d}", .{readInt(s, i + 1, w)}),
                     .call => try writer.writeAll("call"),
                     .func_return => try writer.writeAll("ret"),
-                    .int_add_imm => try opOneImm("iaddi", s, writer, i, comp_width),
-                    .int_sub_imm => try opOneImm("isubi", s, writer, i, comp_width),
-                    .int_mul_imm => try opOneImm("imuli", s, writer, i, comp_width),
-                    .int_div_imm => try opOneImm("idivi", s, writer, i, comp_width),
-                    .int_add => try opOneReg("iadd", s, writer, i, comp_width),
-                    .int_sub => try opOneReg("isub", s, writer, i, comp_width),
-                    .int_mul => try opOneReg("imul", s, writer, i, comp_width),
-                    .int_div => try opOneReg("idiv", s, writer, i, comp_width),
+                    .int_add_imm => try writer.print("iaddi : acc += {d}", .{readInt(s, i + 1, w)}),
+                    .int_sub_imm => try writer.print("isubi : acc -= {d}", .{readInt(s, i + 1, w)}),
+                    .int_mul_imm => try writer.print("imuli : acc *= {d}", .{readInt(s, i + 1, w)}),
+                    .int_div_imm => try writer.print("idivi : acc /= {d}", .{readInt(s, i + 1, w)}),
+                    .int_add => try writer.print("iadd : acc += r{d}", .{readInt(s, i + 1, w)}),
+                    .int_sub => try writer.print("isub : acc -= r{d}", .{readInt(s, i + 1, w)}),
+                    .int_mul => try writer.print("imul : acc *= r{d}", .{readInt(s, i + 1, w)}),
+                    .int_div => try writer.print("idiv : acc /= r{d}", .{readInt(s, i + 1, w)}),
                     .str_write => try writer.writeAll("write"),
                 }
             },
@@ -96,7 +96,7 @@ fn getInstrLength(instr: Opcode.Instr, width: u8) usize {
     }
 }
 
-fn getIntWithWidth(bytes: []const u8, start: usize, comptime int_width: u8) @Int(.unsigned, 1 << int_width + 2) {
+fn readInt(bytes: []const u8, start: usize, comptime int_width: u8) @Int(.unsigned, 1 << int_width + 2) {
     return std.mem.readInt(@Int(.unsigned, 1 << int_width + 2), @ptrCast(bytes[start .. start + int_width]), .native);
 }
 
@@ -107,7 +107,7 @@ fn opOneImm(
     i: usize,
     comptime width: u8,
 ) !void {
-    const immediate = getIntWithWidth(s, i + 1, width);
+    const immediate = readInt(s, i + 1, width);
 
     try writer.print("{s} #{d}", .{ name, immediate });
 }
@@ -119,7 +119,7 @@ fn opOneReg(
     i: usize,
     comptime width: u8,
 ) !void {
-    const reg = getIntWithWidth(s, i + 1, width);
+    const reg = readInt(s, i + 1, width);
 
     try writer.print("{s} r{d}", .{ name, reg });
 }

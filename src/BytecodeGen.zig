@@ -397,9 +397,6 @@ pub fn emitIntFromToken(s: *Self, tok_i: TokenIndex) Error!void {
 fn createBytecode(s: *Self, offset: usize) Error!usize {
     const bytecode = try s.constants_arena.create(Vm.Value.Func);
 
-    try debug.debugBytecode(s.bytecode.items, offset, s.writer);
-    try s.writer.writeByte('\n');
-
     bytecode.* = .{ .bytecode_offset = offset, .reg_file_size = s.stack_size };
 
     const result = s.constants.items.len;
@@ -459,16 +456,22 @@ fn genFuncDecl(s: *Self, scope: *Scope, decl: Node.Index) Error!void {
         try s.emitOp(.func_return);
     }
 
+    const ident = s.ast.tokenString(decl_node.main_token + 1);
+    const is_main_func = std.mem.eql(u8, "main", ident);
     const constant = try s.createBytecode(bytecode_offset);
 
-    assert(scope.kind == .container);
+    // -- DEBUG --
+    if (is_main_func) try s.writer.writeAll("entry ");
+    try s.writer.print("func \"{s}\":\n", .{ident});
+    try debug.debugBytecode(s.bytecode.items, bytecode_offset, s.writer);
+    try s.writer.writeByte('\n');
+    // --
 
-    const ident = s.ast.tokenString(decl_node.main_token + 1);
-
-    if (std.mem.eql(u8, "main", ident)) {
+    if (is_main_func) {
         s.entry_fn = constant;
     }
 
+    assert(scope.kind == .container);
     const container = scope.cast(Scope.Container);
     try container.decls.append(s.gpa, .{
         s.ast.tokenString(decl_node.main_token + 1),
