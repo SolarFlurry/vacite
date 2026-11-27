@@ -175,18 +175,20 @@ fn parseContainerMembers(p: *Parser) Error!ExtraRange {
             else => return p.failError(.{ .expected_decl = p.tokenTag(p.tok_i) }, p.tokenSpan(p.tok_i)),
         };
 
-        _ = p.eatToken(.semicolon) orelse {
-            const tok_span = p.tokenSpan(p.tok_i - 1);
-            const err_span: Span = .{
-                .start = tok_span.end,
-                .end = tok_span.end,
-            };
+        if (p.tokenTag(p.tok_i) == .semicolon or p.tokenTag(p.tok_i - 1) != .r_brace) {
+            _ = p.eatToken(.semicolon) orelse {
+                const tok_span = p.tokenSpan(p.tok_i - 1);
+                const err_span: Span = .{
+                    .start = tok_span.end,
+                    .end = tok_span.end,
+                };
 
-            return p.failError(.{ .expected_token = .{
-                .unexpected = p.tokenTag(p.tok_i),
-                .expected = .semicolon,
-            } }, err_span);
-        };
+                return p.failError(.{ .expected_token = .{
+                    .unexpected = p.tokenTag(p.tok_i),
+                    .expected = .semicolon,
+                } }, err_span);
+            };
+        }
 
         try p.scratch.append(p.gpa, node);
     }

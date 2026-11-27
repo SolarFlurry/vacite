@@ -1,8 +1,8 @@
 func fib() int {
     return "42";
-};
+}
 
 func main() void {
     let foo str = 5 + 9;
     return (return) + foo;
-};
+}
