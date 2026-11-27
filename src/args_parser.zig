@@ -69,12 +69,21 @@ pub const ArgsError = error{
     NotEnoughArgs,
 };
 
-pub fn ParamsTree(comptime str: []const u8) type {
+pub fn dupeStringComptime(comptime slice: []const u8) []const u8 {
+    const copy: [slice.len]u8 = slice[0..slice.len].*;
+    return &copy;
+}
+
+pub fn ParamsTree(
+    comptime subcmds_count: usize,
+    comptime positionals_count: usize,
+    comptime options_count: usize,
+) type {
     return struct {
         root: Subcommand,
-        subcommands: [countSubcommands(str)]Subcommand,
-        positionals: [countPositionals(str)]Positional,
-        options: [countOptions(str)]Option,
+        subcommands: [subcmds_count]Subcommand,
+        positionals: [positionals_count]Positional,
+        options: [options_count]Option,
 
         pub fn ParseResult(comptime tree: *const @This(), comptime value_parsers: anytype) type {
             if (!@inComptime()) @compileError("`ParseResult` must be called at comptime");
@@ -430,10 +439,18 @@ pub fn countOptions(comptime str: []const u8) usize {
     return options;
 }
 
-pub fn parseParams(comptime str: []const u8) ParamsTree(str) {
+pub fn ParseParamsReturn(comptime str: []const u8) type {
+    return ParamsTree(
+        countSubcommands(str),
+        countPositionals(str),
+        countOptions(str),
+    );
+}
+
+pub fn parseParams(comptime str: []const u8) ParseParamsReturn(str) {
     if (!@inComptime()) @compileError("`parseParams` must be called at comptime");
 
-    var tree: ParamsTree(str) = .{
+    var tree: ParseParamsReturn(str) = .{
         .root = undefined,
         .subcommands = undefined,
         .positionals = undefined,
@@ -474,7 +491,7 @@ pub fn parseParams(comptime str: []const u8) ParamsTree(str) {
                         i += 1;
                         const start = i;
                         while (i < str.len and (str[i] != ' ' and str[i] != '\n')) i += 1;
-                        option.long = str[start..i];
+                        option.long = dupeStringComptime(str[start..i]);
 
                         continue :outer;
                     }
@@ -492,7 +509,7 @@ pub fn parseParams(comptime str: []const u8) ParamsTree(str) {
 
                     option.positional = positionals_len;
 
-                    tree.positionals[positionals_len] = .{ .type = str[start..i] };
+                    tree.positionals[positionals_len] = .{ .type = dupeStringComptime(str[start..i]) };
                     positionals_len += 1;
 
                     i += 1;
@@ -503,7 +520,7 @@ pub fn parseParams(comptime str: []const u8) ParamsTree(str) {
                     const start = i;
                     while (i < str.len and str[i] != '\n') i += 1;
 
-                    option.help = str[start..i];
+                    option.help = dupeStringComptime(str[start..i]);
                 },
                 else => @compileError(std.fmt.comptimePrint("cannot parse character '{c}'", .{str[i]})),
             };
@@ -520,7 +537,7 @@ pub fn parseParams(comptime str: []const u8) ParamsTree(str) {
             while (i < str.len and str[i] != '>') i += 1;
             if (i >= str.len) @compileError("need closing '>'");
 
-            tree.positionals[positionals_len] = .{ .type = str[start..i] };
+            tree.positionals[positionals_len] = .{ .type = dupeStringComptime(str[start..i]) };
             positionals_len += 1;
             subcommands_stack.items[subcommands_stack.len - 1].@"1".positionals.end = positionals_len;
 
@@ -551,7 +568,7 @@ pub fn parseParams(comptime str: []const u8) ParamsTree(str) {
             while (i < str.len and std.ascii.isLower(str[i])) i += 1;
             subcommands_stack.push(.{ indent, .{
                 .help = "",
-                .name = str[start..i],
+                .name = dupeStringComptime(str[start..i]),
                 .branches = .{ .start = subcommands_len, .end = subcommands_len },
                 .positionals = .{ .start = positionals_len, .end = positionals_len },
                 .options = .{ .start = options_len, .end = options_len },
@@ -565,7 +582,7 @@ pub fn parseParams(comptime str: []const u8) ParamsTree(str) {
             const start = i;
             while (i < str.len and str[i] != '\n') i += 1;
 
-            subcommands_stack.items[subcommands_stack.len - 1].@"1".help = str[start..i];
+            subcommands_stack.items[subcommands_stack.len - 1].@"1".help = dupeStringComptime(str[start..i]);
         },
         else => @compileError(std.fmt.comptimePrint("cannot parse character '{c}'", str[i])),
     };
