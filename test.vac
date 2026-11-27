@@ -4,6 +4,8 @@ func run() int {
 };
 
 func main() int {
-    if 1 {};
+    if true {
+        let foo = false;
+    };
     return run();
 };

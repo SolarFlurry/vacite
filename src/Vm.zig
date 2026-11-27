@@ -20,6 +20,7 @@ fp: usize,
 pub const Value = extern union {
     int: i64,
     float: f64,
+    bool: bool,
     // // a string that is 8 bytes or less. Null terminated if less than 8 bytes
     // small_str: [8]u8,
     heap_obj: *anyopaque,
@@ -49,11 +50,14 @@ pub const StackFrameHeader = struct {
 
 pub const Opcode = enum(u8) {
     // instrs
-    load_from_reg,
-    store_to_reg,
     load_int_imm,
     load_constant,
-    func_return,
+    load_true,
+    load_false,
+
+    load_from_reg,
+    store_to_reg,
+
     int_add_imm,
     int_sub_imm,
     int_mul_imm,
@@ -63,6 +67,10 @@ pub const Opcode = enum(u8) {
     int_mul,
     int_div,
 
+    func_return,
+
+    jump_if_false,
+    jump,
     call,
 
     str_write,
@@ -195,6 +203,9 @@ pub fn run(s: *Vm, writer: *std.Io.Writer) error{ WriteFailed, OutOfMemory }!voi
         switch (instr) {
             .load_int_imm => s.acc = .{ .int = s.readBytes(i64, width) },
             .load_constant => s.acc.heap_obj = @constCast(s.constants[s.readBytes(usize, width)]),
+            .load_true => s.acc = .{ .bool = true },
+            .load_false => s.acc = .{ .bool = false },
+
             .store_to_reg => {
                 const reg = s.readBytes(usize, width);
                 s.setReg(reg, s.acc);
@@ -244,6 +255,17 @@ pub fn run(s: *Vm, writer: *std.Io.Writer) error{ WriteFailed, OutOfMemory }!voi
                 s.fp = stack_frame.callee_fp;
             },
 
+            .jump_if_false => if (!s.acc.bool) {
+                const offset = s.readBytes(isize, width);
+                // a zig trick to add an isize to a usize because of the
+                // annoying integer rules of zig
+                s.pc +%= @bitCast(offset);
+            },
+            .jump => {
+                const offset = s.readBytes(isize, width);
+                // ditto
+                s.pc +%= @bitCast(offset);
+            },
             .call => {
                 const func_ptr: [*]const u8 = @ptrCast(s.acc.heap_obj);
                 const func = std.mem.bytesAsValue(Value.Func, func_ptr);

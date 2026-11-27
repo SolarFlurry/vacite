@@ -35,7 +35,13 @@ writer: *std.Io.Writer,
 allocated_regs: u8,
 stack_size: u8,
 should_print_bytecode: bool,
-last_emitted_op: Opcode = .call,
+last_emitted: struct {
+    instr: Opcode.Instr,
+    idx: u32,
+} = .{
+    .instr = .call,
+    .idx = 0,
+},
 ast: *const Ast,
 diagnositcs: *Diagnostics,
 
@@ -45,11 +51,15 @@ pub const Symbol = struct {
     value: Value,
     type: Type.Ref,
 
-    pub fn atomicType(ref: Type.Ref) Symbol {
+    pub fn init(ref: Type.Ref, value: Value) Symbol {
         return .{
-            .value = .{ .type = ref },
-            .type = .type,
+            .value = value,
+            .type = ref,
         };
+    }
+
+    pub fn atomicType(ref: Type.Ref) Symbol {
+        return .init(.type, .{ .type = ref });
     }
 
     pub const Value = union(enum) {
@@ -59,6 +69,8 @@ pub const Symbol = struct {
         reg: u8,
         /// holds a compile time type value
         type: Type.Ref,
+        /// the variable compiles to a single instruction
+        instr: Vm.Opcode.Instr,
     };
 };
 
@@ -162,6 +174,8 @@ pub const Scope = struct {
         .{ "str", Symbol.atomicType(.str) },
         .{ "type", Symbol.atomicType(.type) },
         .{ "void", Symbol.atomicType(.void) },
+        .{ "true", Symbol.init(.bool, .{ .instr = .load_true }) },
+        .{ "false", Symbol.init(.bool, .{ .instr = .load_false }) },
     });
 
     /// used for local var declarations as well as
@@ -370,10 +384,47 @@ pub fn addScope(s: *Self, comptime T: type, scope: T) Allocator.Error!*Scope {
     return &scope_ptr.base;
 }
 
-pub fn emitOp(s: *Self, op: Opcode) Error!void {
-    // std.debug.print("Emit op: .{s}\n", .{@tagName(op)});
+pub fn emitOpWithWidth(s: *Self, width: Opcode, op: Opcode.Instr) Error!void {
+    s.last_emitted = .{
+        .instr = op,
+        .idx = @intCast(s.bytecode.items.len),
+    };
+    try s.bytecode.append(s.gpa, @backingInt(width));
     try s.bytecode.append(s.gpa, @backingInt(op));
-    s.last_emitted_op = op;
+}
+
+pub fn emitOp(s: *Self, op: Opcode.Instr) Error!void {
+    s.last_emitted = .{
+        .instr = op,
+        .idx = @intCast(s.bytecode.items.len),
+    };
+    try s.bytecode.append(s.gpa, @backingInt(op));
+}
+
+const Jump = struct {
+    patch_idx: u32,
+    instr_idx: u32,
+};
+
+pub fn emitJumpOp(s: *Self, op: Opcode.Instr) Error!Jump {
+    const current_idx = s.bytecode.items.len;
+    try s.emitOpWithWidth(.width32, op);
+
+    const patch_idx = s.bytecode.items.len;
+    _ = try s.bytecode.addManyAsArray(s.gpa, 4);
+
+    return .{
+        .patch_idx = @intCast(patch_idx),
+        .instr_idx = @intCast(current_idx),
+    };
+}
+
+pub fn patchJump(s: *Self, jump: Jump) void {
+    const current: i64 = s.last_emitted.idx;
+    const jump_instr: i64 = @intCast(jump.instr_idx);
+    const relative: i32 = @intCast(current - jump_instr);
+
+    @memcpy(s.bytecode.items[jump.patch_idx .. jump.patch_idx + 4], std.mem.asBytes(&relative));
 }
 
 pub fn allocReg(s: *Self) u8 {
@@ -455,7 +506,7 @@ fn genFuncDecl(s: *Self, scope: *Scope, decl: Node.Index) Error!void {
 
     _ = try s.genBlock(scope, block, &return_info);
 
-    if (s.last_emitted_op != .func_return) {
+    if (s.last_emitted.instr != .func_return) {
         try s.emitOp(.func_return);
     }
 
@@ -610,15 +661,17 @@ fn genExpr(s: *Self, scope: *Scope, expr: Node.Index, return_info: *const Return
                     try s.emitVal(reg);
                 },
                 .constant => |constant| {
-                    try s.emitOp(.width64);
-                    try s.emitOp(.load_constant);
+                    try s.emitOpWithWidth(.width64, .load_constant);
                     try s.emitVal(constant);
                 },
                 .type => {},
+                .instr => |instr| {
+                    try s.emitOp(instr);
+                },
             }
             return symbol.type;
         },
-        .block => try s.genBlock(scope, node.data.node, return_info),
+        .block => try s.genBlock(scope, expr, return_info),
         .string_literal => {
             const token_string = s.ast.tokenString(node.main_token);
             assert(token_string.len >= 2);
@@ -627,17 +680,20 @@ fn genExpr(s: *Self, scope: *Scope, expr: Node.Index, return_info: *const Return
 
             const string_splice = token_string[1 .. token_string.len - 1];
 
-            // adds @sizeOf(usize) for the string length
-            const string_ptr = try s.constants_arena.alloc(u8, string_splice.len + @sizeOf(usize));
+            const string_ptr = try s.constants_arena.alignedAlloc(
+                u8,
+                .fromByteUnits(@alignOf(Vm.Value.StringHeader)),
+                @sizeOf(Vm.Value.StringHeader) + string_splice.len,
+            );
+            const string_header: *Vm.Value.StringHeader = @ptrCast(string_ptr);
 
-            std.mem.writeInt(usize, string_ptr[0..@sizeOf(usize)], string_splice.len, .native);
+            string_header.len = string_splice.len;
             @memcpy(string_ptr[@sizeOf(usize)..], string_splice);
 
             const string_constant: u64 = @intCast(s.constants.items.len);
             try s.constants.append(s.gpa, string_ptr.ptr);
 
-            try s.emitOp(.width64);
-            try s.emitOp(.load_constant);
+            try s.emitOpWithWidth(.width64, .load_constant);
             try s.emitVal(string_constant);
 
             return .str;
@@ -663,7 +719,8 @@ fn genExpr(s: *Self, scope: *Scope, expr: Node.Index, return_info: *const Return
             return func_data.func.return_type;
         },
         .@"return" => try s.genReturn(scope, expr, return_info),
-        .@"if", .if_else => {
+        .@"if" => return s.genIfSimple(scope, return_info, expr),
+        .if_else => {
             try s.emitError(
                 .{ .direct_msg = "If expression not implemented yet" },
                 s.ast.nodeSpan(expr),
@@ -681,7 +738,7 @@ fn genExpr(s: *Self, scope: *Scope, expr: Node.Index, return_info: *const Return
 fn genBinOp(s: *Self, scope: *Scope, node: Node, return_info: *const ReturnInfo) Error!Type.Ref {
     const start_regs = s.allocated_regs;
 
-    const op: Opcode = switch (s.ast.tokenTag(node.main_token)) {
+    const op: Opcode.Instr = switch (s.ast.tokenTag(node.main_token)) {
         .plus => .int_add,
         .minus => .int_sub,
         .asterisk => .int_mul,
@@ -696,7 +753,7 @@ fn genBinOp(s: *Self, scope: *Scope, node: Node, return_info: *const ReturnInfo)
     if (rhs.kind == .int_literal) {
         // if rhs is literal we can use the imm version instead
         // subtracting 4 to non-imm int op results in imm [`@import("Vm.zig").Opcode`]
-        const imm_op: Opcode = @fromBackingInt(@backingInt(op) - 4);
+        const imm_op: Opcode.Instr = @fromBackingInt(@backingInt(op) - 4);
 
         lhs_type = try s.genExpr(scope, node.data.node_and_node.@"0", return_info);
         rhs_type = .int;
@@ -772,4 +829,27 @@ fn genReturn(s: *Self, scope: *Scope, node: Node.Index, return_info: *const Retu
     try s.emitOp(.func_return);
 
     return .noreturn;
+}
+
+fn genIfSimple(s: *Self, scope: *Scope, return_info: *const ReturnInfo, node: Node.Index) Error!Type.Ref {
+    const if_expr = s.ast.getNode(node);
+    const cond_type = try s.genExpr(scope, if_expr.data.node_and_node.@"0", return_info);
+
+    if (cond_type != .bool) {
+        try s.emitError(
+            .{ .expected_type = .{
+                .expected = .bool,
+                .found = cond_type,
+            } },
+            s.ast.nodeSpan(if_expr.data.node_and_node.@"0"),
+        );
+        return .poison;
+    }
+
+    const jump = try s.emitJumpOp(.jump_if_false);
+
+    const then_type = try s.genExpr(scope, if_expr.data.node_and_node.@"1", return_info);
+    s.patchJump(jump);
+
+    return then_type;
 }

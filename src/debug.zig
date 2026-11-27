@@ -61,8 +61,13 @@ fn printNode(s: *const Ast, writer: *std.Io.Writer, node_i: Node.Index, indent: 
             }
             try writer.writeByte('\n');
         },
+        .@"if" => {
+            try writer.writeAll(":\n");
+            try printNode(s, writer, node.data.node_and_node.@"0", indent + 1);
+            try printNode(s, writer, node.data.node_and_node.@"1", indent + 1);
+        },
         .block => {
-            try writer.writeByte('\n');
+            try writer.writeAll(":\n");
             const stmts = s.extraDataSlice(node.data.extra_range, Node.Index);
             for (stmts) |stmt| {
                 try printNode(s, writer, stmt, indent + 1);
@@ -114,20 +119,24 @@ pub fn debugBytecode(s: []const u8, instrs_offset: usize, writer: *std.Io.Writer
                 try writer.writeAll(.{ "", "w16_", "w32_", "w64_" }[w - 1]);
 
                 switch (instr) {
-                    .store_to_reg => try writer.print("star : r{d} = acc", .{readInt(s, i + 1, w)}),
-                    .load_from_reg => try writer.print("ldra : acc = r{d}", .{readInt(s, i + 1, w)}),
-                    .load_int_imm => try writer.print("ldia : acc = {d}", .{readInt(s, i + 1, w)}),
-                    .load_constant => try writer.print("ldca : acc = c{d}", .{readInt(s, i + 1, w)}),
+                    .load_true => try writer.print("ldtr : acc = true", .{}),
+                    .load_false => try writer.print("ldfs : acc = false", .{}),
+                    .load_int_imm => try writer.print("ldia : acc = {d}", .{readUint(s, i + 1, w)}),
+                    .load_constant => try writer.print("ldca : acc = c{d}", .{readUint(s, i + 1, w)}),
+                    .store_to_reg => try writer.print("star : r{d} = acc", .{readUint(s, i + 1, w)}),
+                    .load_from_reg => try writer.print("ldra : acc = r{d}", .{readUint(s, i + 1, w)}),
+                    .jump => try writer.print("jump -> {d:1}", .{readInt(s, i + 1, w)}),
+                    .jump_if_false => try writer.print("jif : if (!acc) jump -> {d:1}", .{readInt(s, i + 1, w)}),
                     .call => try writer.writeAll("call"),
                     .func_return => try writer.writeAll("ret"),
-                    .int_add_imm => try writer.print("iaddi : acc += {d}", .{readInt(s, i + 1, w)}),
-                    .int_sub_imm => try writer.print("isubi : acc -= {d}", .{readInt(s, i + 1, w)}),
-                    .int_mul_imm => try writer.print("imuli : acc *= {d}", .{readInt(s, i + 1, w)}),
-                    .int_div_imm => try writer.print("idivi : acc /= {d}", .{readInt(s, i + 1, w)}),
-                    .int_add => try writer.print("iadd : acc += r{d}", .{readInt(s, i + 1, w)}),
-                    .int_sub => try writer.print("isub : acc -= r{d}", .{readInt(s, i + 1, w)}),
-                    .int_mul => try writer.print("imul : acc *= r{d}", .{readInt(s, i + 1, w)}),
-                    .int_div => try writer.print("idiv : acc /= r{d}", .{readInt(s, i + 1, w)}),
+                    .int_add_imm => try writer.print("iaddi : acc += {d}", .{readUint(s, i + 1, w)}),
+                    .int_sub_imm => try writer.print("isubi : acc -= {d}", .{readUint(s, i + 1, w)}),
+                    .int_mul_imm => try writer.print("imuli : acc *= {d}", .{readUint(s, i + 1, w)}),
+                    .int_div_imm => try writer.print("idivi : acc /= {d}", .{readUint(s, i + 1, w)}),
+                    .int_add => try writer.print("iadd : acc += r{d}", .{readUint(s, i + 1, w)}),
+                    .int_sub => try writer.print("isub : acc -= r{d}", .{readUint(s, i + 1, w)}),
+                    .int_mul => try writer.print("imul : acc *= r{d}", .{readUint(s, i + 1, w)}),
+                    .int_div => try writer.print("idiv : acc /= r{d}", .{readUint(s, i + 1, w)}),
                     .str_write => try writer.writeAll("write"),
                 }
             },
@@ -142,7 +151,12 @@ pub fn debugBytecode(s: []const u8, instrs_offset: usize, writer: *std.Io.Writer
 
 fn getInstrLength(instr: Opcode.Instr, width: u8) usize {
     switch (instr) {
-        .str_write, .func_return, .call => return 1,
+        .str_write,
+        .func_return,
+        .call,
+        .load_true,
+        .load_false,
+        => return 1,
         .load_int_imm,
         .load_constant,
         .store_to_reg,
@@ -155,12 +169,26 @@ fn getInstrLength(instr: Opcode.Instr, width: u8) usize {
         .int_sub,
         .int_mul,
         .int_div,
+        .jump,
+        .jump_if_false,
         => return 1 + (@as(usize, 1) << @intCast(width - 1)),
     }
 }
 
-fn readInt(bytes: []const u8, start: usize, comptime int_width: u8) @Int(.unsigned, 1 << int_width + 2) {
-    return std.mem.readInt(@Int(.unsigned, 1 << int_width + 2), @ptrCast(bytes[start .. start + int_width]), .native);
+fn readSInt(
+    comptime signedness: std.lang.Signedness,
+    bytes: []const u8,
+    start: usize,
+    comptime int_width: u8,
+) @Int(signedness, 1 << int_width + 2) {
+    return std.mem.readInt(@Int(signedness, 1 << int_width + 2), @ptrCast(bytes[start .. start + int_width]), .native);
+}
+
+fn readUint(bytes: []const u8, start: usize, comptime int_width: u8) @Int(.unsigned, 1 << int_width + 2) {
+    return readSInt(.unsigned, bytes, start, int_width);
+}
+fn readInt(bytes: []const u8, start: usize, comptime int_width: u8) @Int(.signed, 1 << int_width + 2) {
+    return readSInt(.signed, bytes, start, int_width);
 }
 
 fn opOneImm(
@@ -170,7 +198,7 @@ fn opOneImm(
     i: usize,
     comptime width: u8,
 ) !void {
-    const immediate = readInt(s, i + 1, width);
+    const immediate = readUint(s, i + 1, width);
 
     try writer.print("{s} #{d}", .{ name, immediate });
 }
@@ -182,7 +210,7 @@ fn opOneReg(
     i: usize,
     comptime width: u8,
 ) !void {
-    const reg = readInt(s, i + 1, width);
+    const reg = readUint(s, i + 1, width);
 
     try writer.print("{s} r{d}", .{ name, reg });
 }
