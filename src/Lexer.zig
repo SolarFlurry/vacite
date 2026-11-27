@@ -287,6 +287,10 @@ pub fn next(self: *Self) Token {
                     self.index += 1;
                     result.tag = .minus_equal;
                 },
+                '-' => {
+                    self.index += 1;
+                    continue :state .comment;
+                },
                 else => result.tag = .minus,
             }
         },
@@ -307,10 +311,6 @@ pub fn next(self: *Self) Token {
                     self.index += 1;
                     result.tag = .slash_equal;
                 },
-                '/' => {
-                    self.index += 1;
-                    continue :state .comment;
-                },
                 else => result.tag = .slash,
             }
         },
@@ -320,31 +320,71 @@ pub fn next(self: *Self) Token {
     return result;
 }
 
-pub fn tokeniseAllTags(gpa: std.mem.Allocator, src: [:0]const u8) error{OutOfMemory}![]Token.Tag {
+/// no need to put the EOF token in `expected`
+pub fn testTokenise(
+    src: [:0]const u8,
+    expected: []const struct { Token.Tag, []const u8 },
+) !void {
     var lexer: Self = .init(src);
-    var tokens: std.ArrayList(Token.Tag) = .empty;
 
-    var token = lexer.next();
+    for (expected) |expected_tok| {
+        const token = lexer.next();
 
-    while (token.tag != .eof) {
-        try tokens.append(gpa, token.tag);
-        token = lexer.next();
+        try std.testing.expectEqualSlices(u8, expected_tok.@"1", src[token.loc.start..token.loc.end]);
+        try std.testing.expectEqual(token.tag, expected_tok.@"0");
     }
 
-    return tokens.toOwnedSlice(gpa);
+    if (lexer.next().tag != .eof) {
+        return error.TooManyTokens;
+    }
 }
 
-test "idents" {
-    const gpa = std.testing.allocator;
+test "null string" {
+    try testTokenise("", &.{});
+}
 
-    const tokens = try tokeniseAllTags(gpa, "hello hello_world foo foo-bar cutoff-");
-    defer gpa.free(tokens);
+test "single ident" {
+    try testTokenise("foo-barBaz", &.{.{ .identifier, "foo-barBaz" }});
+}
 
-    try std.testing.expectEqualSlices(Token.Tag, tokens, &.{
-        .identifier,
-        .identifier,
-        .identifier,
-        .identifier,
-        .identifier,
+test "keywords" {
+    try testTokenise(
+        \\let var func
+        \\return continue break
+        \\if then else while
+    , &.{
+        .{ .keyword_let, "let" },
+        .{ .keyword_var, "var" },
+        .{ .keyword_func, "func" },
+        .{ .keyword_return, "return" },
+        .{ .keyword_continue, "continue" },
+        .{ .keyword_break, "break" },
+        .{ .keyword_if, "if" },
+        .{ .keyword_then, "then" },
+        .{ .keyword_else, "else" },
+        .{ .keyword_while, "while" },
+    });
+}
+
+test "numbers" {
+    try testTokenise("1234\n42", &.{
+        .{ .int_literal, "1234" },
+        .{ .int_literal, "42" },
+    });
+}
+
+test "comments" {
+    try testTokenise(
+        \\-- this is a comment
+        \\ident
+        \\ 78 -- another comment -- still a comment
+        \\ - -
+        \\--chained
+        \\--comments
+    , &.{
+        .{ .identifier, "ident" },
+        .{ .int_literal, "78" },
+        .{ .minus, "-" },
+        .{ .minus, "-" },
     });
 }

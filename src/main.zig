@@ -143,3 +143,7 @@ fn run(
 
     try vm.run(writer);
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}
