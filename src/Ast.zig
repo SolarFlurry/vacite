@@ -45,8 +45,11 @@ pub const Node = struct {
         /// main_token: `func`
         /// data: node_and_extra
         ///   node: the return type expr
-        ///   extra: ExtraRange to param nodes
+        ///   extra: ExtraRange of Param
         func_proto,
+        /// var ident = initial
+        /// let ident Type = initial
+        ///
         /// main_token: `let` or `var`
         /// data: node_and_opt
         ///   node: the initial expression
@@ -63,19 +66,42 @@ pub const Node = struct {
         /// main_token: operator
         /// data: node
         prefix_op,
+        /// { stmts; }
+        ///
         /// main_token: `{`
         /// data: extra_range
         ///    points to the statements
         block,
+        /// return
+        /// return expr
+        ///
         /// main_token: `return`
         /// data: opt
         ///    optional return value
         @"return",
+        /// f(...)
+        ///
         /// main_token: `(`
         /// data: node_and_extra
         ///    node: the function
-        ///    extra: points to ExtraRange
+        ///    extra: points to ExtraRange of the parameters
         func_call,
+        /// if cond { ... }
+        /// if (cond) then expr
+        ///
+        /// main_token: `if`
+        /// data: node_and_node
+        ///    0: condition
+        ///    1: then_expr
+        @"if",
+        /// if cond { ... } else b
+        /// if cond then a else b
+        ///
+        /// main_token: `if`
+        /// data: node_and_extra
+        ///    node: condition
+        ///    extra: IfElse
+        if_else,
     };
 
     pub const Data = union {
@@ -118,6 +144,11 @@ pub const Node = struct {
     pub const Param = struct {
         ident: TokenIndex,
         type: Node.Index,
+    };
+
+    pub const IfElse = struct {
+        then_expr: Node.Index,
+        else_expr: Node.Index,
     };
 };
 

@@ -663,10 +663,18 @@ fn genExpr(s: *Self, scope: *Scope, expr: Node.Index, return_info: *const Return
             return func_data.func.return_type;
         },
         .@"return" => try s.genReturn(scope, expr, return_info),
-        .var_decl => unreachable,
-        .func_decl => unreachable,
-        .func_proto => unreachable,
-        .root => unreachable,
+        .@"if", .if_else => {
+            try s.emitError(
+                .{ .direct_msg = "If expression not implemented yet" },
+                s.ast.nodeSpan(expr),
+            );
+            return .poison;
+        },
+        .var_decl,
+        .func_decl,
+        .func_proto,
+        .root,
+        => unreachable,
     };
 }
 

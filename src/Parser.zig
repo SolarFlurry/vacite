@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 
 const Ast = @import("Ast.zig");
 const TokenIndex = Ast.TokenIndex;
@@ -12,7 +13,6 @@ const Token = Lexer.Token;
 const Span = Lexer.Span;
 
 const Parser = @This();
-
 gpa: Allocator,
 source: [:0]const u8,
 tokens: Ast.TokenList.Slice,
@@ -421,6 +421,7 @@ fn parsePrimaryTypeExpr(p: *Parser) Error!?Node.Index {
             } }, p.tokenSpan(p.tok_i));
             return expr;
         },
+        .keyword_if => return try p.parseIfExpr(),
         else => return null,
     };
 
@@ -428,6 +429,42 @@ fn parsePrimaryTypeExpr(p: *Parser) Error!?Node.Index {
         .main_token = p.nextToken(),
         .kind = node_kind,
         .data = undefined,
+    });
+}
+
+fn parseIfExpr(p: *Parser) Error!?Node.Index {
+    const if_tok = p.eatToken(.keyword_if) orelse return null;
+    const cond_expr = try p.expectExpr();
+
+    const then_or_lbrace = p.tokenTag(p.tok_i);
+
+    const then_expr: Node.Index = if (then_or_lbrace == .l_brace)
+        try p.parseBlock() orelse unreachable
+    else then: {
+        _ = try p.expectToken(.keyword_then);
+        break :then try p.expectExpr();
+    };
+
+    _ = p.eatToken(.keyword_else) orelse {
+        return try p.addNode(.{
+            .main_token = if_tok,
+            .kind = .@"if",
+            .data = .{ .node_and_node = .{ cond_expr, then_expr } },
+        });
+    };
+
+    const else_expr = try p.expectExpr();
+
+    return try p.addNode(.{
+        .main_token = if_tok,
+        .kind = .if_else,
+        .data = .{ .node_and_extra = .{
+            .node = cond_expr,
+            .extra = try p.addExtraStruct(Node.IfElse{
+                .then_expr = then_expr,
+                .else_expr = else_expr,
+            }),
+        } },
     });
 }
 
@@ -452,7 +489,7 @@ fn parseBlock(p: *Parser) Error!?Node.Index {
 
         try p.scratch.append(p.gpa, node);
 
-        if (p.tokenTag(p.tok_i - 1) != .r_brace) {
+        if (p.tokenTag(p.tok_i) == .semicolon or p.tokenTag(p.tok_i - 1) != .r_brace) {
             _ = p.eatToken(.semicolon) orelse {
                 const tok_span = p.tokenSpan(p.tok_i - 1);
                 const err_span: Span = .{
