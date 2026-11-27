@@ -2,11 +2,11 @@ const std = @import("std");
 
 const args_parser = @import("args_parser.zig");
 const Ast = @import("Ast.zig");
+const debug = @import("debug.zig");
 const Diagnostics = @import("Diagnostics.zig");
 const print = @import("pretty_print.zig").print;
 const Vm = @import("Vm.zig");
 const Opcode = Vm.Opcode;
-const debug = @import("Vm/debug.zig");
 
 const DebugFlags = packed struct {
     tokens: bool = false,
@@ -131,8 +131,8 @@ fn run(
     };
     defer ast.deinit(gpa);
 
-    if (debug_flags.tokens) try ast.printTokens(writer);
-    if (debug_flags.ast) try writer.print("{f}", .{ast});
+    if (debug_flags.tokens) try debug.debugTokens(&ast, writer);
+    if (debug_flags.ast) try debug.debugAst(&ast, writer);
 
     var vm = ast.genBytecode(gpa, writer, &diagnostics, debug_flags.bytecode) catch |err| {
         if (err != error.GenError) return err;

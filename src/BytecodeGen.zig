@@ -10,7 +10,7 @@ const Diagnostic = Diagnostics.Diagnostic;
 const Span = @import("Lexer.zig").Span;
 const Vm = @import("Vm.zig");
 const Opcode = Vm.Opcode;
-const debug = @import("Vm/debug.zig");
+const debug = @import("debug.zig");
 
 pub const Error = Allocator.Error || error{ GenError, WriteFailed };
 

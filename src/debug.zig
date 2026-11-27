@@ -1,21 +1,84 @@
 const std = @import("std");
 
-const Vm = @import("../Vm.zig");
-const StackFrame = Vm.StackFrame;
+const Ast = @import("Ast.zig");
+const Node = Ast.Node;
+const print = @import("pretty_print.zig").print;
+const Vm = @import("Vm.zig");
 const BytecodeArray = Vm.BytecodeArray;
 const Opcode = Vm.Opcode;
 
-pub fn printDebug(s: *const StackFrame, writer: *std.Io.Writer) !void {
-    try debugStackFrame(s, writer);
-    try debugBytecode(&s.instrs, writer);
+pub fn debugAst(s: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    try writer.writeByte('\n');
+
+    const root_node = s.nodes.get(0);
+    const decls = s.extraDataSlice(root_node.data.extra_range, Node.Index);
+
+    for (decls) |decl| {
+        try printNode(s, writer, decl, 0);
+    }
 }
 
-pub fn debugStackFrame(s: *const StackFrame, writer: *std.Io.Writer) !void {
-    try writer.print("Accumulator: {d}\n", .{s.acc.int});
-    try writer.writeAll("Register File:\n");
+pub fn debugTokens(s: *const Ast, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    for (0..s.tokens.len) |i| {
+        const token = s.tokens.get(i);
 
-    for (s.reg_file, 0..) |value, i| {
-        try writer.print("  r{d}: {d}\n", .{ i, value.int });
+        try print(
+            writer,
+            "<d>.<0c>{s}<0> ->> <y>'{s}'<0>\n",
+            .{ @tagName(token.tag), s.source[token.loc.start..token.loc.end] },
+        );
+    }
+}
+
+fn printNode(s: *const Ast, writer: *std.Io.Writer, node_i: Node.Index, indent: u32) std.Io.Writer.Error!void {
+    const node = s.getNode(node_i);
+
+    try writer.splatBytesAll("  ", indent);
+    try print(writer, "<d>.<0c>{s}<0>", .{@tagName(node.kind)});
+
+    switch (node.kind) {
+        .root => unreachable,
+        .infix_op => {
+            try print(writer, " <y>'{s}'<0>:\n", .{s.tokenString(node.main_token)});
+            try printNode(s, writer, node.data.node_and_node.@"0", indent + 1);
+            try printNode(s, writer, node.data.node_and_node.@"1", indent + 1);
+        },
+        .int_literal => {
+            const token = s.tokens.get(node.main_token);
+            const str = s.source[token.loc.start..token.loc.end];
+            try print(writer, " <r>{s}<0>\n", .{str});
+        },
+        .var_decl => {
+            const ident = s.tokens.get(node.main_token + 1);
+            try print(writer, " `{s}`:\n", .{s.source[ident.loc.start..ident.loc.end]});
+            try printNode(s, writer, node.data.node_and_opt.@"0", indent + 1);
+        },
+        .@"return" => {
+            if (node.data.opt.toOptional()) |return_expr| {
+                try writer.writeAll(":\n");
+                try printNode(s, writer, return_expr, indent + 1);
+                return;
+            }
+            try writer.writeByte('\n');
+        },
+        .block => {
+            try writer.writeByte('\n');
+            const stmts = s.extraDataSlice(node.data.extra_range, Node.Index);
+            for (stmts) |stmt| {
+                try printNode(s, writer, stmt, indent + 1);
+            }
+        },
+        .func_decl => {
+            const ident = s.tokens.get(node.main_token + 1);
+            try print(writer, " `{s}`:\n", .{s.source[ident.loc.start..ident.loc.end]});
+            try printNode(s, writer, node.data.node_and_node.@"0", indent + 1);
+            try printNode(s, writer, node.data.node_and_node.@"1", indent + 1);
+        },
+        .identifier => {
+            const ident = s.tokens.get(node.main_token);
+            try print(writer, " `{s}`\n", .{s.source[ident.loc.start..ident.loc.end]});
+        },
+        else => try writer.writeByte('\n'),
     }
 }
 
