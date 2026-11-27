@@ -84,6 +84,12 @@ pub const Diagnostic = struct {
             return_type_node: Node.Index,
             found: Type.Ref,
         },
+        incompatible_if_branch_types: struct {
+            then: Node.Index,
+            then_type: Type.Ref,
+            @"else": Node.Index,
+            else_type: Type.Ref,
+        },
         expected_type: struct {
             expected: Type.Ref,
             found: Type.Ref,
@@ -141,6 +147,7 @@ pub const Diagnostic = struct {
 
                 const lhs_span = ast.nodeSpan(d.lhs);
                 const rhs_span = ast.nodeSpan(d.rhs);
+
                 labels.appendAssumeCapacity(.{
                     .message = try printA(arena, "LHS has type <r>{s}<0>", .{lhs_type_string}),
                     .span = lhs_span,
@@ -173,6 +180,27 @@ pub const Diagnostic = struct {
                 labels.appendAssumeCapacity(.{
                     .message = try printA(arena, "Return value has type <r>{s}<0>", .{found_string}),
                     .span = s.span,
+                });
+            },
+            .incompatible_if_branch_types => |d| {
+                const then_string = d.then_type.toString();
+                const else_string = d.else_type.toString();
+
+                try print(writer, "`if` and `else` have incompatible types <r>{s}<0> and <r>{s}<0>\n", .{ then_string, else_string });
+
+                labels.appendAssumeCapacity(.{
+                    .message = try printA(arena, "Incompatible branches of this `if`", .{}),
+                    .span = s.span,
+                });
+
+                labels.appendAssumeCapacity(.{
+                    .message = try printA(arena, "`if` branch has type <r>{s}<0>", .{then_string}),
+                    .span = ast.nodeSpan(d.then),
+                });
+
+                labels.appendAssumeCapacity(.{
+                    .message = try printA(arena, "`else` branch has type <r>{s}<0>", .{else_string}),
+                    .span = ast.nodeSpan(d.@"else"),
                 });
             },
             .expected_type_because => |d| {

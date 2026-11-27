@@ -5,12 +5,12 @@ const assert = std.debug.assert;
 const Ast = @import("Ast.zig");
 const Node = Ast.Node;
 const TokenIndex = Ast.TokenIndex;
+const debug = @import("debug.zig");
 const Diagnostics = @import("Diagnostics.zig");
 const Diagnostic = Diagnostics.Diagnostic;
 const Span = @import("Lexer.zig").Span;
 const Vm = @import("Vm.zig");
 const Opcode = Vm.Opcode;
-const debug = @import("debug.zig");
 
 pub const Error = Allocator.Error || error{ GenError, WriteFailed };
 
@@ -720,13 +720,7 @@ fn genExpr(s: *Self, scope: *Scope, expr: Node.Index, return_info: *const Return
         },
         .@"return" => try s.genReturn(scope, expr, return_info),
         .@"if" => return s.genIfSimple(scope, return_info, expr),
-        .if_else => {
-            try s.emitError(
-                .{ .direct_msg = "If expression not implemented yet" },
-                s.ast.nodeSpan(expr),
-            );
-            return .poison;
-        },
+        .if_else => return s.genIfElse(scope, return_info, expr),
         .var_decl,
         .func_decl,
         .func_proto,
@@ -852,4 +846,47 @@ fn genIfSimple(s: *Self, scope: *Scope, return_info: *const ReturnInfo, node: No
     s.patchJump(jump);
 
     return then_type;
+}
+
+fn genIfElse(s: *Self, scope: *Scope, return_info: *const ReturnInfo, node: Node.Index) Error!Type.Ref {
+    const if_expr = s.ast.getNode(node);
+    const cond_type = try s.genExpr(scope, if_expr.data.node_and_extra.node, return_info);
+
+    if (cond_type != .bool) {
+        try s.emitError(
+            .{ .expected_type = .{
+                .expected = .bool,
+                .found = cond_type,
+            } },
+            s.ast.nodeSpan(if_expr.data.node_and_node.@"0"),
+        );
+        return .poison;
+    }
+
+    const else_jump = try s.emitJumpOp(.jump_if_false);
+
+    const then_else: Node.IfElse = s.ast.extraData(if_expr.data.node_and_extra.extra, Node.IfElse);
+
+    const then_type = try s.genExpr(scope, then_else.then_expr, return_info);
+    const out_jump = try s.emitJumpOp(.jump);
+
+    s.patchJump(else_jump);
+    const else_type = try s.genExpr(scope, then_else.else_expr, return_info);
+
+    s.patchJump(out_jump);
+
+    if (!s.typesCompat(then_type, else_type)) {
+        try s.emitError(
+            .{ .incompatible_if_branch_types = .{
+                .then = then_else.then_expr,
+                .then_type = then_type,
+                .@"else" = then_else.else_expr,
+                .else_type = else_type,
+            } },
+            s.ast.nodeSpan(node),
+        );
+        return .poison;
+    }
+
+    return s.commonType(then_type, else_type);
 }
